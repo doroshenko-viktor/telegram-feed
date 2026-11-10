@@ -1,0 +1,19 @@
+# Binaries
+bin/
+/telegram-feed
+/telegram-feed-*
+
+# Secrets and local configurations
+.env
+.env.*
+config.yaml
+config.yml
+roadmap.md
+
+# Local SQLite databases
+*.db
+*.db-wal
+*.db-shm
+
+# System files
+.DS_Store

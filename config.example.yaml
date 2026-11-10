@@ -1,0 +1,33 @@
+# telegram-feed configuration template
+# Save this file to ~/.config/telegram-feed/config.yaml or pass via --config /path/to/config.yaml
+
+telegram:
+  app_id: 12345678 # Your Telegram App ID from https://my.telegram.org
+  app_hash: "abcdef0123456789" # Your Telegram App Hash
+
+  # Optional: Push digests to a dedicated private Telegram Bot feed instead of Saved Messages
+  # bot_token: "123456789:ABCDefgh-your-bot-token"
+  # bot_chat_id: "123456789"
+
+storage:
+  driver: "auto" # "auto", "sqlite", or "postgres"
+  # Default SQLite path (zero-config):
+  dsn: "~/.config/telegram-feed/feed.db"
+  # Or use your existing PostgreSQL server:
+  # dsn: "postgres://user:password@localhost:5432/telegram_feed?sslmode=disable"
+
+gemini:
+  # Optional: API key for local autonomous summaries and AI channel profiling
+  # If empty, the app runs in pure pull-based MCP mode (free, zero API keys required)
+  api_key: ""
+  model: "gemini-3.8-flash"
+  temperature: 0.2
+  max_tokens: 4096
+
+daemon:
+  cron_schedule: "0 9 * * *" # Every day at 09:00 AM
+  output_dir: "~/.config/telegram-feed/digests"
+
+pipeline:
+  filter_ads: true
+  min_post_length: 20

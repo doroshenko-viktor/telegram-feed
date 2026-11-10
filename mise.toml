@@ -1,0 +1,68 @@
+# mise.toml - Mise-en-place configuration for telegram-feed
+# Documentation: https://mise.jdx.dev
+
+[env]
+# Automatically load .env file if present
+_.file = ".env"
+
+[tasks.build]
+description = "Build static binary into ./bin/telegram-feed"
+run = "mkdir -p bin && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/telegram-feed ./cmd/telegram-feed"
+
+[tasks.install]
+description = "Install static binary to ~/.local/bin/telegram-feed"
+depends = ["build"]
+run = "install -m 755 bin/telegram-feed ~/.local/bin/telegram-feed"
+
+[tasks.test]
+description = "Run full automated test suite with race detection"
+run = "go test -v -race ./..."
+
+[tasks.tui]
+description = "Launch interactive Terminal User Interface (TUI)"
+run = "go run ./cmd/telegram-feed"
+
+[tasks.login]
+description = "Interactive Telegram MTProto terminal login wizard"
+run = "go run ./cmd/telegram-feed login"
+
+[tasks.sync]
+description = "Discover subscribed channels and sync new messages"
+run = "go run ./cmd/telegram-feed sync"
+
+[tasks.mcp]
+description = "Start Model Context Protocol (MCP) server over stdio"
+run = "go run ./cmd/telegram-feed mcp"
+
+[tasks.digest]
+description = "Generate an on-demand topic digest"
+run = "go run ./cmd/telegram-feed digest --topic all"
+
+[tasks.daemon]
+description = "Run scheduled background cron scheduler"
+run = "go run ./cmd/telegram-feed daemon"
+
+[tasks.config]
+description = "Inspect active configuration and capabilities"
+run = "go run ./cmd/telegram-feed config"
+
+[tasks.clean]
+description = "Clean compiled binaries"
+run = "rm -rf bin telegram-feed"
+
+[tasks.build-all]
+description = "Cross-compile static binaries for macOS, Linux, and Windows"
+run = """
+mkdir -p bin
+echo "Building macOS arm64..."
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o bin/telegram-feed-darwin-arm64 ./cmd/telegram-feed
+echo "Building macOS amd64..."
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o bin/telegram-feed-darwin-amd64 ./cmd/telegram-feed
+echo "Building Linux amd64..."
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o bin/telegram-feed-linux-amd64 ./cmd/telegram-feed
+echo "Building Linux arm64..."
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o bin/telegram-feed-linux-arm64 ./cmd/telegram-feed
+echo "Building Windows amd64..."
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o bin/telegram-feed-windows-amd64.exe ./cmd/telegram-feed
+echo "✅ All platform binaries created in ./bin/"
+"""
