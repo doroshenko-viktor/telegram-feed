@@ -755,6 +755,17 @@ func (m *Model) renderDigestMenuModal() string {
 		}
 	}
 
+	content.WriteString("\n")
+	if m.geminiKey != "" {
+		engineStr := fmt.Sprintf("🤖 Active Engine: Google Gemini AI (%s)", m.geminiModel)
+		content.WriteString(lipgloss.NewStyle().Foreground(accentColor).Render(engineStr) + "\n")
+	} else {
+		engineStr := "⚡ Active Engine: Offline Extractive Mode (Rule-based heuristics)"
+		tipStr := "   (No Gemini Key configured. Set in [o] Settings for AI neural summarization)"
+		content.WriteString(lipgloss.NewStyle().Foreground(highlightColor).Render(engineStr) + "\n")
+		content.WriteString(lipgloss.NewStyle().Foreground(subtleColor).Render(tipStr) + "\n")
+	}
+
 	content.WriteString("\n" + lipgloss.NewStyle().Foreground(subtleColor).Render("Controls: [Tab/←/→] Toggle Scope  •  [↑/↓] Change Period  •  [Enter] Generate  •  [Esc] Cancel"))
 
 	b.WriteString(borderStyle.Render(content.String()))
@@ -845,6 +856,7 @@ func (m *Model) renderHelpBar() string {
 			helpKey("[↑/↓]") + " Select Digest",
 			helpKey("[Enter]") + " Read Full",
 			helpKey("[g]") + " Create Digest",
+			helpKey("[x]") + " Delete Digest",
 			helpKey("[Esc]") + " Back",
 		}
 	}

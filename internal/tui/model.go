@@ -1091,6 +1091,18 @@ func (m *Model) updateDigests(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.digestScrollOffset = 0
 		}
 		return m, nil
+	case "x", "delete": // Delete selected digest
+		if len(m.digests) > 0 && m.digestCursor < len(m.digests) {
+			d := m.digests[m.digestCursor]
+			ctx := context.Background()
+			_ = m.repo.DeleteDigest(ctx, d.ID)
+			m.setStatus(fmt.Sprintf("Deleted digest: %s", d.Title))
+			m.reloadDigests()
+			if m.digestCursor >= len(m.digests) {
+				m.digestCursor = max(0, len(m.digests)-1)
+			}
+		}
+		return m, nil
 	case "g": // Open Digest Creation Menu
 		m.showingDigestMenu = true
 		m.digestMenuScope = 0

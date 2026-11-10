@@ -242,6 +242,48 @@ func TestTUI_FullDigestReader(t *testing.T) {
 	}
 }
 
+func TestTUI_DeleteDigest(t *testing.T) {
+	m, repo, _ := setupTestTUI(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	_ = repo.SaveDigest(ctx, &domain.Digest{
+		ID:              "digest-del-1",
+		Title:           "Digest to Delete",
+		Topic:           "all",
+		PeriodStart:     now.Add(-24 * time.Hour),
+		PeriodEnd:       now,
+		SummaryMarkdown: "# Digest to Delete",
+		PostCount:       5,
+		CreatedAt:       now,
+	})
+	m.reloadDigests()
+
+	if len(m.digests) != 1 {
+		t.Fatalf("expected 1 digest before deletion, got %d", len(m.digests))
+	}
+
+	m.activeView = ViewDigests
+	m.digestCursor = 0
+
+	// Press [x] to delete digest
+	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = newModel.(*Model)
+
+	if len(m.digests) != 0 {
+		t.Fatalf("expected 0 digests after pressing [x], got %d", len(m.digests))
+	}
+
+	// Verify in database
+	digestsInDB, err := repo.ListDigests(ctx, "all", false, 10)
+	if err != nil {
+		t.Fatalf("ListDigests failed: %v", err)
+	}
+	if len(digestsInDB) != 0 {
+		t.Errorf("expected 0 digests in DB after deletion, got %d", len(digestsInDB))
+	}
+}
+
 func TestTUI_PromptEditorInSettings(t *testing.T) {
 	m, repo, _ := setupTestTUI(t)
 	ctx := context.Background()

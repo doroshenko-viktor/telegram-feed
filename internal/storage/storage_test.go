@@ -260,6 +260,38 @@ func TestDigestPrivacyIsolation(t *testing.T) {
 	}
 }
 
+func TestDeleteDigest(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestDB(t)
+
+	digest := &domain.Digest{
+		ID:              "digest-to-delete",
+		Title:           "Temporary Digest",
+		Topic:           "all",
+		PeriodStart:     time.Now().Add(-1 * time.Hour),
+		PeriodEnd:       time.Now(),
+		SummaryMarkdown: "# Temporary",
+		PostCount:       1,
+	}
+	if err := repo.SaveDigest(ctx, digest); err != nil {
+		t.Fatalf("SaveDigest failed: %v", err)
+	}
+
+	digests, err := repo.ListDigests(ctx, "all", false, 10)
+	if err != nil || len(digests) != 1 {
+		t.Fatalf("expected 1 digest before deletion, got %d, err: %v", len(digests), err)
+	}
+
+	if err := repo.DeleteDigest(ctx, "digest-to-delete"); err != nil {
+		t.Fatalf("DeleteDigest failed: %v", err)
+	}
+
+	digestsAfter, err := repo.ListDigests(ctx, "all", false, 10)
+	if err != nil || len(digestsAfter) != 0 {
+		t.Fatalf("expected 0 digests after deletion, got %d, err: %v", len(digestsAfter), err)
+	}
+}
+
 func TestSessionStorageInDB(t *testing.T) {
 	ctx := context.Background()
 	repo := setupTestDB(t)

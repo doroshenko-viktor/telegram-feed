@@ -31,6 +31,7 @@ type Repository interface {
 	SaveDigest(ctx context.Context, digest *Digest) error
 	GetLatestDigest(ctx context.Context, topic string, mcpOnly bool) (*Digest, error)
 	ListDigests(ctx context.Context, topic string, mcpOnly bool, limit int) ([]*Digest, error)
+	DeleteDigest(ctx context.Context, id string) error
 
 	// Session operations (stored in DB instead of disk files)
 	LoadSession(ctx context.Context, id string) ([]byte, error)

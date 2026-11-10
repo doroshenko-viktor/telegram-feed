@@ -605,6 +605,15 @@ func (r *SQLRepository) ListDigests(ctx context.Context, topic string, mcpOnly b
 	return digests, rows.Err()
 }
 
+func (r *SQLRepository) DeleteDigest(ctx context.Context, id string) error {
+	query := `DELETE FROM digests WHERE id = ?`
+	_, err := r.db.ExecContext(ctx, r.rebind(query), id)
+	if err != nil {
+		return fmt.Errorf("deleting digest %s: %w", id, err)
+	}
+	return nil
+}
+
 // --- Session Operations ---
 
 func (r *SQLRepository) LoadSession(ctx context.Context, id string) ([]byte, error) {
