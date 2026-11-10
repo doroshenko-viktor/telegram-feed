@@ -4,15 +4,33 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Protocol: MCP](https://img.shields.io/badge/Protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
 
-An extensible, production-ready Go application that connects to your personal Telegram account via MTProto, filters out channel noise and ads, and turns overwhelming Telegram programming feeds into high-signal digests.
+> **High-signal Telegram feed reader, noise filter, and intelligence synthesizer.**  
+> Connects directly to your personal Telegram account via native MTProto, strips out ads and fluff, and distills overwhelming feeds into actionable, link-preserving digests — delivered via an interactive Terminal UI (TUI), pushed to your Telegram bot, or queried on-the-fly by AI assistants over MCP.
 
-Built as a **single, zero-configuration static binary** with:
-- **Interactive Terminal UI (TUI)** (powered by [Bubble Tea](https://github.com/charmbracelet/bubbletea)).
-- **Model Context Protocol (MCP) Server** (for Claude Desktop, Cursor, Antigravity, Open WebUI).
-- **Zero-Trust Privacy Gateway**: third-party LLMs physically only see channels you explicitly allowlist.
-- **Database-Backed MTProto Sessions**: zero session files on disk; stored directly in SQLite or PostgreSQL.
-- **Dynamic Database-Driven Ad Filtering**: customizable regex and keyword ad rules editable directly via TUI/MCP.
-- **Cross-Platform**: pure Go without CGO, kernel locks, or OS-specific domain sockets.
+---
+
+## 🎯 What Problem It Solves
+
+Modern technical Telegram channels and news feeds publish dozens or hundreds of posts daily. Staying informed has become exhausting due to three primary challenges:
+
+1. **Information Overload & Low Signal-to-Noise**: Valuable open-source releases, engineering benchmarks, and architectural writeups are buried under sponsored ads, course promos, crypto spam, and engagement padding (views, forwards, clickbait).
+2. **Lossy, Incoherent Summaries in Generic Tools**: Typical summarizers blindly strip text, drop critical external resources (GitHub repos, documentation, original post links), cut sentences off in the middle of a thought, and fail to attribute which channel published what.
+3. **Privacy Risks with Cloud Scrapers**: Feeding your Telegram stream into third-party cloud bots or web services risks exposing private discussions, family chats, and confidential work channels.
+
+---
+
+## 💡 What `telegram-feed` Does & How
+
+`telegram-feed` is a local, privacy-first, zero-CGO Go binary that acts as your personal Telegram intelligence assistant:
+
+- **Direct MTProto Synchronization**: Connects securely as your native client using Telegram's MTProto protocol (via `gotd/td`). Session keys are encrypted and stored directly in your local SQLite/PostgreSQL database — zero `.session` files on disk.
+- **Rule-Based Ad & Spam Cleaning**: Automatically evaluates incoming messages against customizable regex and keyword patterns (managed in-database and editable in real-time) to drop promotional spam before it hits your digest.
+- **Dual-Engine Summarization**:
+  - **Gemini Neural Synthesis**: Uses Google Gemini (with automatic model failover) and customizable editorial prompts to produce structured, complete-sentence digests in the source language, preserving all technical URLs and GitHub repos while respecting your focus topics (`user_interests`) and ignored topics (`user_ignored_topics`).
+  - **Offline Extractive Fallback**: If no API key is provided or the network is unavailable, a rule-based heuristic ranker extracts headlines, key takeaways, and external links without making any network calls.
+- **Channel Attribution & Per-Channel Bot Delivery**: Every summary clearly states its source channel (`📢 Channel Title (@username)`). When dispatched to a personal Telegram bot, the digest is delivered as separate, beautifully rendered HTML messages per channel.
+- **Zero-Trust MCP Privacy Gateway**: Exposes your feeds to external AI environments (Claude Desktop, Cursor, Antigravity) over the Model Context Protocol (MCP). Channels are quarantined by default — external LLMs physically cannot see or query any channel you haven't explicitly allowlisted.
+- **Interactive Terminal UI (TUI)**: A full-screen [Bubble Tea](https://github.com/charmbracelet/bubbletea) dashboard to manage channels, tag topics, inspect post counts, tune ad rules, customize prompt templates, generate digests on-demand, and read them in a built-in markdown viewer.
 
 ---
 
@@ -89,13 +107,19 @@ Browse joined channels, press `Space` to track, and press `m` to allowlist chann
 
 | Key | Action |
 | :--- | :--- |
-| `↑` / `↓` (or `k` / `j`) | Navigate channels or rules |
+| `↑` / `↓` (or `k` / `j`) | Navigate channels, settings, or digests |
+| `Enter` | Open Channel Details & Tag Editor (or open Full Digest Reader in Digests view) |
 | `Space` | Toggle Sync tracking (`is_tracked`) |
 | `m` | **Zero-Trust Privacy**: Toggle third-party LLM access over MCP (`mcp_allowed`) |
 | `a` | Toggle Ad Filtering for selected channel |
+| `g` | Open **Digest Generation Menu** (target scope, topic tags, time period) |
+| `c` | Generate digest pre-targeted to currently selected channel |
+| `s` | **Sync**: Fetch new incoming posts from tracked Telegram channels |
 | `/` | Search & filter channels by title, username, or topic tag |
-| `o` | Open **Settings & Dynamic Ad Rules** modal |
+| `p` | Open **Ad Filter Rules** view |
+| `o` | Open **Settings & Personalization** modal |
 | `d` | Browse **Past Digests History** |
+| `x` | Delete selected digest (in Digests view) or delete ad rule (in Ad Rules view) |
 | `r` | Refresh database records |
 | `q` / `Ctrl+C` | Quit |
 
