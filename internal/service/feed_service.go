@@ -12,6 +12,7 @@ import (
 	"telegram_feed_summarizer/internal/domain"
 	"telegram_feed_summarizer/internal/llm"
 	"telegram_feed_summarizer/internal/llm/gemini"
+	"telegram_feed_summarizer/internal/logger"
 	"telegram_feed_summarizer/internal/pipeline"
 	"telegram_feed_summarizer/internal/telegram"
 )
@@ -228,33 +229,47 @@ func (s *FeedService) GenerateDigestWithOptions(ctx context.Context, opts Digest
 		rangeLabel = "Unread"
 	}
 
+	logger.Infof("Generating digest for target='%s', period='%s', topic='%s'", targetName, rangeLabel, topic)
+
 	posts, err := s.repo.GetPosts(ctx, filter)
 	if err != nil {
+		logger.Errorf("Fetching posts for digest failed: %v", err)
 		return nil, fmt.Errorf("fetching posts for digest: %w", err)
 	}
 
 	// If unread was selected and no local posts found, attempt a delta sync from Telegram
 	if len(posts) == 0 && opts.TimeRange == TimeRangeUnread && s.tgClient != nil && s.tgClient.IsConfigured() {
+		logger.Infof("No local unread posts found; triggering delta sync from Telegram...")
 		_, _ = s.SyncTrackedPosts(ctx)
 		posts, err = s.repo.GetPosts(ctx, filter)
 		if err != nil {
+			logger.Errorf("Fetching posts after sync failed: %v", err)
 			return nil, fmt.Errorf("fetching posts after sync: %w", err)
 		}
 	}
 
 	if len(posts) == 0 {
-		return nil, fmt.Errorf("no posts found for '%s' in period '%s'", targetName, rangeLabel)
+		errMsg := fmt.Sprintf("no posts found for '%s' in period '%s'", targetName, rangeLabel)
+		if opts.TimeRange == TimeRangeUnread {
+			errMsg += " (all posts are already marked read; try selecting 'Today' or 'Past 7 Days' to re-summarize, or press [s] to sync new posts)"
+		}
+		logger.Warnf("%s", errMsg)
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 
-	// Dynamic AI key detection (in case user updated Gemini key in TUI settings)
-	if s.llmProv == nil || !s.llmProv.HasAI() {
-		apiKey, _ := s.repo.GetSetting(ctx, domain.SettingKeyGeminiAPIKey, "")
-		if apiKey != "" {
-			model, _ := s.repo.GetSetting(ctx, domain.SettingKeyGeminiModel, "gemini-3.8-flash")
-			if prov, err := gemini.NewGeminiProvider(ctx, config.GeminiConfig{APIKey: apiKey, Model: model}); err == nil {
-				s.llmProv = prov
-			}
+	logger.Infof("Found %d posts for digest generation", len(posts))
+
+	// Dynamic AI key detection (always re-check DB in case user updated Gemini key/model in TUI settings)
+	apiKey, _ := s.repo.GetSetting(ctx, domain.SettingKeyGeminiAPIKey, "")
+	if apiKey != "" {
+		model, _ := s.repo.GetSetting(ctx, domain.SettingKeyGeminiModel, "gemini-3.5-flash")
+		if prov, err := gemini.NewGeminiProvider(ctx, config.GeminiConfig{APIKey: apiKey, Model: model}); err == nil {
+			s.llmProv = prov
+		} else {
+			logger.Errorf("Failed to initialize Gemini provider with model '%s': %v", model, err)
 		}
+	} else {
+		s.llmProv = nil
 	}
 
 	title := fmt.Sprintf("%s - %s", targetName, rangeLabel)
@@ -275,19 +290,31 @@ func (s *FeedService) GenerateDigestWithOptions(ctx context.Context, opts Digest
 
 	var digest *domain.Digest
 	if s.llmProv != nil && s.llmProv.HasAI() {
+		logger.Infof("Invoking Gemini AI summarization engine...")
 		d, err := s.llmProv.GenerateDigest(ctx, topic, posts, channels, promptTemplate)
 		if err != nil {
-			return nil, fmt.Errorf("generating digest with LLM: %w", err)
+			logger.Warnf("Gemini AI synthesis failed: %v. Gracefully falling back to Extractive mode.", err)
+			extD, extErr := pipeline.GenerateExtractiveDigestWithTitle(title, topic, posts, channels)
+			if extErr != nil {
+				logger.Errorf("Extractive fallback also failed: %v", extErr)
+				return nil, fmt.Errorf("generating digest (Gemini failed: %v; Extractive fallback failed: %w)", err, extErr)
+			}
+			extD.Title = fmt.Sprintf("%s (Extractive Fallback) - %s", title, time.Now().Format("Jan 02, 2006"))
+			digest = extD
+		} else {
+			d.Title = title
+			digest = d
+			logger.Infof("Successfully generated AI digest: '%s' (%d posts summarized)", digest.Title, digest.PostCount)
 		}
-		d.Title = title
-		digest = d
 	} else {
-		// Fallback to high-signal extractive digest
+		logger.Infof("No AI API key set. Generating digest using offline Extractive mode...")
 		d, err := pipeline.GenerateExtractiveDigestWithTitle(title, topic, posts, channels)
 		if err != nil {
+			logger.Errorf("Generating extractive digest failed: %v", err)
 			return nil, fmt.Errorf("generating extractive digest: %w", err)
 		}
 		digest = d
+		logger.Infof("Successfully generated Extractive digest: '%s' (%d posts)", digest.Title, digest.PostCount)
 	}
 
 	// Persist digest into database

@@ -11,6 +11,7 @@ import (
 
 	"telegram_feed_summarizer/internal/config"
 	"telegram_feed_summarizer/internal/domain"
+	"telegram_feed_summarizer/internal/logger"
 	"telegram_feed_summarizer/internal/pipeline"
 )
 
@@ -54,7 +55,7 @@ func NewGeminiProvider(ctx context.Context, cfg config.GeminiConfig) (*GeminiPro
 
 	model := cfg.Model
 	if model == "" {
-		model = "gemini-3.8-flash"
+		model = "gemini-3.5-flash"
 	}
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
@@ -132,18 +133,35 @@ func (g *GeminiProvider) GenerateDigest(ctx context.Context, topic string, posts
 		sb.WriteString("\n</post>\n\n")
 	}
 
-	result, err := g.client.Models.GenerateContent(ctx, g.model, genai.Text(sb.String()), nil)
-	if err != nil {
-		return nil, fmt.Errorf("generating digest content with %s: %w", g.model, err)
+	modelsToTry := []string{g.model}
+	if g.model != "gemini-3.5-flash" {
+		modelsToTry = append(modelsToTry, "gemini-3.5-flash")
+	}
+	if g.model != "gemini-3.5-flash-lite" {
+		modelsToTry = append(modelsToTry, "gemini-3.5-flash-lite")
 	}
 
-	summaryText := ""
-	if result != nil {
-		summaryText = result.Text()
+	var result *genai.GenerateContentResponse
+	var lastErr error
+
+	for _, tryModel := range modelsToTry {
+		logger.Infof("Calling Gemini API with model '%s' for topic '%s' (%d posts)...", tryModel, topic, len(posts))
+		res, err := g.client.Models.GenerateContent(ctx, tryModel, genai.Text(sb.String()), nil)
+		if err == nil && res != nil && res.Text() != "" {
+			result = res
+			logger.Infof("Gemini model '%s' successfully synthesized digest (%d characters)", tryModel, len(res.Text()))
+			break
+		}
+		lastErr = err
+		logger.Warnf("Gemini model '%s' failed: %v", tryModel, err)
 	}
-	if summaryText == "" {
-		return nil, fmt.Errorf("gemini returned an empty response")
+
+	if result == nil || result.Text() == "" {
+		logger.Errorf("All Gemini models failed: %v", lastErr)
+		return nil, fmt.Errorf("generating digest with gemini: %w", lastErr)
 	}
+
+	summaryText := result.Text()
 
 	var channelIDs []int64
 	for id := range channelIDMap {

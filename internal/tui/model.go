@@ -191,7 +191,7 @@ func (m *Model) reloadSettingsAndPatterns() {
 	m.hasAppHash = (appHash != "")
 
 	m.geminiKey, _ = m.repo.GetSetting(ctx, domain.SettingKeyGeminiAPIKey, "")
-	m.geminiModel, _ = m.repo.GetSetting(ctx, domain.SettingKeyGeminiModel, "gemini-3.8-flash")
+	m.geminiModel, _ = m.repo.GetSetting(ctx, domain.SettingKeyGeminiModel, "gemini-3.5-flash")
 
 	m.botToken, _ = m.repo.GetSetting(ctx, domain.SettingKeyBotToken, "")
 	m.botChatID, _ = m.repo.GetSetting(ctx, domain.SettingKeyBotChatID, "")
@@ -265,7 +265,7 @@ func (m *Model) getSettingItems() []SettingItem {
 			Label:       "Gemini Synthesis Model",
 			Description: "Active AI model (Space to cycle)",
 			IsCycle:     true,
-			CycleOpts:   []string{"gemini-3.8-flash", "gemini-3.8-pro", "gemini-3.0-flash"},
+			CycleOpts:   []string{"gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"},
 			Value:       m.geminiModel,
 		},
 		{
@@ -396,7 +396,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isBusy = false
 		m.busyAction = ""
 		if msg.err != nil {
-			m.setStatus(fmt.Sprintf("❌ Digest failed: %v", msg.err))
+			m.setStatus(fmt.Sprintf("❌ Digest failed: %v (details in ~/.config/telegram-feed/telegram-feed.log)", msg.err))
 		} else {
 			m.setStatus(fmt.Sprintf("✓ %s created! (%d posts summarized)", msg.digest.Title, msg.digest.PostCount))
 			m.reloadDigests()

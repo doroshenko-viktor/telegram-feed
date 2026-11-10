@@ -53,8 +53,14 @@ func (m *Model) View() string {
 	var statusLine string
 	if m.isBusy {
 		statusLine = statusBarStyle.Width(m.width).Render("⏳ " + m.busyAction)
-	} else if m.statusMsg != "" && time.Since(m.statusTime) < 5*time.Second {
-		statusLine = statusBarStyle.Width(m.width).Render("ℹ " + m.statusMsg)
+	} else if m.statusMsg != "" {
+		timeout := 5 * time.Second
+		if strings.HasPrefix(m.statusMsg, "❌") || strings.HasPrefix(m.statusMsg, "⚠️") {
+			timeout = 25 * time.Second
+		}
+		if time.Since(m.statusTime) < timeout {
+			statusLine = statusBarStyle.Width(m.width).Render("ℹ " + m.statusMsg)
+		}
 	}
 
 	helpBar := m.renderHelpBar()

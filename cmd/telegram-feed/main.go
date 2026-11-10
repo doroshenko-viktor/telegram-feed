@@ -14,6 +14,7 @@ import (
 	"telegram_feed_summarizer/internal/config"
 	"telegram_feed_summarizer/internal/llm"
 	"telegram_feed_summarizer/internal/llm/gemini"
+	"telegram_feed_summarizer/internal/logger"
 	"telegram_feed_summarizer/internal/mcp"
 	"telegram_feed_summarizer/internal/service"
 	"telegram_feed_summarizer/internal/storage"
@@ -22,6 +23,8 @@ import (
 )
 
 func main() {
+	logFile := logger.Init()
+	logger.Infof("telegram-feed starting. Logging to %s", logFile)
 	configPath := flag.String("config", "", "Path to custom config.yaml file")
 	flag.Parse()
 

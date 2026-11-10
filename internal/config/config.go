@@ -37,7 +37,7 @@ type StorageConfig struct {
 
 type GeminiConfig struct {
 	APIKey      string  `yaml:"api_key" env:"GEMINI_API_KEY" env-description:"Google AI Studio API Key"`
-	Model       string  `yaml:"model" env:"GEMINI_MODEL" env-default:"gemini-3.8-flash"`
+	Model       string  `yaml:"model" env:"GEMINI_MODEL" env-default:"gemini-3.5-flash"`
 	Temperature float32 `yaml:"temperature" env:"GEMINI_TEMPERATURE" env-default:"0.2"`
 	MaxTokens   int     `yaml:"max_tokens" env:"GEMINI_MAX_TOKENS" env-default:"4096"`
 }
