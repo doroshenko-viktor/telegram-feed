@@ -330,8 +330,12 @@ func (s *FeedService) GenerateDigestWithOptions(ctx context.Context, opts Digest
 		botSender := telegram.NewBotSender(token, chatID)
 		if botSender.IsConfigured() {
 			if err := botSender.SendDigest(ctx, digest.SummaryMarkdown); err != nil {
-				fmt.Printf("⚠️ Warning sending digest to Telegram bot: %v\n", err)
+				logger.Warnf("⚠️ Warning sending digest to Telegram bot: %v", err)
+			} else {
+				logger.Infof("✓ Successfully sent digest '%s' to Telegram bot chat %s", digest.Title, chatID)
 			}
+		} else {
+			logger.Warnf("Telegram bot delivery enabled, but bot token or chat ID is missing")
 		}
 	}
 
