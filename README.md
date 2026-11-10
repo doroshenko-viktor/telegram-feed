@@ -9,28 +9,35 @@
 
 ---
 
-## 🎯 What Problem It Solves
+## 🎯 The Problem
 
-Modern technical Telegram channels and news feeds publish dozens or hundreds of posts daily. Staying informed has become exhausting due to three primary challenges:
+Telegram channels have become a primary source of news, engineering updates, and domain knowledge. However, following multiple active channels quickly creates overwhelming cognitive load:
 
-1. **Information Overload & Low Signal-to-Noise**: Valuable open-source releases, engineering benchmarks, and architectural writeups are buried under sponsored ads, course promos, crypto spam, and engagement padding (views, forwards, clickbait).
-2. **Lossy, Incoherent Summaries in Generic Tools**: Typical summarizers blindly strip text, drop critical external resources (GitHub repos, documentation, original post links), cut sentences off in the middle of a thought, and fail to attribute which channel published what.
-3. **Privacy Risks with Cloud Scrapers**: Feeding your Telegram stream into third-party cloud bots or web services risks exposing private discussions, family chats, and confidential work channels.
+- **Information Overload**: Channels publish dozens or hundreds of messages daily, burying critical insights under endless scrolling.
+- **Noise & Fluff**: Sponsored advertisements, promotional courses, crypto spam, engagement metrics (views, forwards), and irrelevant chatter clutter the feed.
+- **Time & Focus Drain**: Manually scanning multiple channels to find what actually matters steals hours of productive focus every day.
 
 ---
 
-## 💡 What `telegram-feed` Does & How
+## 💡 What `telegram-feed` Does
 
-`telegram-feed` is a local, privacy-first, zero-CGO Go binary that acts as your personal Telegram intelligence assistant:
+`telegram-feed` gives you a **short, comprehensive, high-signal summary of your chosen Telegram channels**, drastically reducing cognitive load while keeping you informed.
 
-- **Direct MTProto Synchronization**: Connects securely as your native client using Telegram's MTProto protocol (via `gotd/td`). Session keys are encrypted and stored directly in your local SQLite/PostgreSQL database — zero `.session` files on disk.
-- **Rule-Based Ad & Spam Cleaning**: Automatically evaluates incoming messages against customizable regex and keyword patterns (managed in-database and editable in real-time) to drop promotional spam before it hits your digest.
-- **Dual-Engine Summarization**:
-  - **Gemini Neural Synthesis**: Uses Google Gemini (with automatic model failover) and customizable editorial prompts to produce structured, complete-sentence digests in the source language, preserving all technical URLs and GitHub repos while respecting your focus topics (`user_interests`) and ignored topics (`user_ignored_topics`).
-  - **Offline Extractive Fallback**: If no API key is provided or the network is unavailable, a rule-based heuristic ranker extracts headlines, key takeaways, and external links without making any network calls.
-- **Channel Attribution & Per-Channel Bot Delivery**: Every summary clearly states its source channel (`📢 Channel Title (@username)`). When dispatched to a personal Telegram bot, the digest is delivered as separate, beautifully rendered HTML messages per channel.
-- **Zero-Trust MCP Privacy Gateway**: Exposes your feeds to external AI environments (Claude Desktop, Cursor, Antigravity) over the Model Context Protocol (MCP). Channels are quarantined by default — external LLMs physically cannot see or query any channel you haven't explicitly allowlisted.
-- **Interactive Terminal UI (TUI)**: A full-screen [Bubble Tea](https://github.com/charmbracelet/bubbletea) dashboard to manage channels, tag topics, inspect post counts, tune ad rules, customize prompt templates, generate digests on-demand, and read them in a built-in markdown viewer.
+It acts as a local, privacy-first intelligence assistant with:
+
+1. **Customizable Relevance & Filtering Criteria**:
+   - **What to preserve**: Automatically extracts and preserves critical technical resources (GitHub repos, documentation links, external articles, and original post references) along with complete, coherent thoughts.
+   - **What to strip**: Drops promotional ads, spam, engagement metrics, and irrelevant fluff before summarization.
+   - **Personalized Focus**: Tailor what is prioritized (`user_interests`) and what is ignored (`user_ignored_topics`), or customize the underlying summarization prompt directly from settings.
+
+2. **Choice of Delivery Modes**:
+   - 🖥️ **Interactive Terminal UI (TUI)**: Browse tracked channels, group them by topics and tags, generate digests on-demand (for all channels, individual channels, or specific tags over any time period), and read them in a built-in full-screen reader.
+   - 🤖 **Telegram Bot Push Delivery**: Deliver automated, rich HTML digests directly to your private chat with a dedicated bot. Multi-channel digests are delivered channel-by-channel with clear attribution (`📢 Channel Title (@username)`), so you always know where each update originated.
+   - 🔌 **Model Context Protocol (MCP)**: Query your channel feeds and recall past digests on-the-fly inside your favorite AI environment (Claude Desktop, Cursor, Antigravity) — backed by a **zero-trust privacy gateway** that strictly limits LLM access only to channels you explicitly allowlist.
+
+3. **Dual-Engine Summarization**:
+   - **AI Neural Synthesis**: Leverages Google Gemini to synthesize nuanced, complete summaries in the source language of your feeds.
+   - **Offline Extractive Engine**: Works completely offline without requiring any external AI API keys using rule-based heuristic ranking and link extraction.
 
 ---
 
