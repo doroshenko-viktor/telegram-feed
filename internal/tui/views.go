@@ -560,7 +560,8 @@ func (m *Model) renderDigestsView() string {
 	if len(m.digests) > 0 && m.digestCursor < len(m.digests) {
 		selected := m.digests[m.digestCursor]
 		b.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render(" ── Summary Preview: "+selected.Title+" (Press [Enter] to read full digest) ──") + "\n")
-		lines := strings.Split(selected.SummaryMarkdown, "\n")
+		contentWidth := max(30, m.width-6)
+		lines := wrapMarkdownLines(selected.SummaryMarkdown, contentWidth)
 		previewCapacity := max(6, m.height-maxDigestList-14)
 		for j := 0; j < min(len(lines), previewCapacity); j++ {
 			b.WriteString("  " + lines[j] + "\n")
@@ -572,6 +573,52 @@ func (m *Model) renderDigestsView() string {
 	}
 
 	return b.String()
+}
+
+func wrapMarkdownLines(markdown string, width int) []string {
+	if width < 30 {
+		width = 30
+	}
+	rawLines := strings.Split(markdown, "\n")
+	var result []string
+
+	for _, rawLine := range rawLines {
+		trimmed := strings.TrimRight(rawLine, " \t\r")
+		if trimmed == "" {
+			result = append(result, "")
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "# ") {
+			rendered := lipgloss.NewStyle().Width(width).Bold(true).Foreground(highlightColor).Render(trimmed)
+			for _, sub := range strings.Split(rendered, "\n") {
+				result = append(result, sub)
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			rendered := lipgloss.NewStyle().Width(width).Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render(trimmed)
+			for _, sub := range strings.Split(rendered, "\n") {
+				result = append(result, sub)
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "### ") {
+			rendered := lipgloss.NewStyle().Width(width).Bold(true).Foreground(accentColor).Render(trimmed)
+			for _, sub := range strings.Split(rendered, "\n") {
+				result = append(result, sub)
+			}
+			continue
+		}
+
+		// Style and wrap normal markdown lines
+		rendered := lipgloss.NewStyle().Width(width).Render(trimmed)
+		for _, sub := range strings.Split(rendered, "\n") {
+			result = append(result, sub)
+		}
+	}
+
+	return result
 }
 
 func (m *Model) renderFullDigestReader() string {
@@ -589,7 +636,8 @@ func (m *Model) renderFullDigestReader() string {
 	)
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(headerInfo) + "\n\n")
 
-	lines := strings.Split(selected.SummaryMarkdown, "\n")
+	contentWidth := max(30, m.width-4)
+	lines := wrapMarkdownLines(selected.SummaryMarkdown, contentWidth)
 	pageSize := max(5, m.height-6)
 
 	maxOffset := max(0, len(lines)-pageSize)
@@ -601,16 +649,7 @@ func (m *Model) renderFullDigestReader() string {
 	end := min(len(lines), start+pageSize)
 
 	for i := start; i < end; i++ {
-		line := lines[i]
-		if strings.HasPrefix(line, "# ") {
-			b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(line) + "\n")
-		} else if strings.HasPrefix(line, "## ") {
-			b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render(line) + "\n")
-		} else if strings.HasPrefix(line, "### ") {
-			b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render(line) + "\n")
-		} else {
-			b.WriteString(line + "\n")
-		}
+		b.WriteString(lines[i] + "\n")
 	}
 
 	return b.String()

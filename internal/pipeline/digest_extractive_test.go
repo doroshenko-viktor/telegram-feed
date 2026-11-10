@@ -216,7 +216,7 @@ func TestGenerateExtractiveDigest_NoiseAndGossipScrubbing(t *testing.T) {
 		{
 			ID:       400,
 			Title:    "4PDA Community",
-			Username: "four_pda",
+			Username: "", // Test channel without public username (private / nameless)
 		},
 	}
 
@@ -225,10 +225,10 @@ func TestGenerateExtractiveDigest_NoiseAndGossipScrubbing(t *testing.T) {
 			ChannelID: 400,
 			MsgID:     101,
 			Date:      now.Add(-6 * time.Hour),
-			Text: "Как устроен интернет — теперь можно изучить на одном сайте.\n" +
-				"Нашли интерактивный учебник, который наглядно разбирает работу 14 сетевых протоколов.\n" +
-				"На примерах объясняют, как работает TCP и каким образом DNS находит нужный сайт в сети.\n" +
-				"Ссылка: [Интерактивный учебник](https://how-internet-works.com)\n" +
+			Text: "Как устроен интернет — теперь можно изучить на одном сайте\n\n" +
+				"Нашли интерактивный учебник, который наглядно разбирает работу 14 сетевых протоколов. " +
+				"На примерах объясняют, как работает TCP и каким образом DNS находит нужный сайт в сети.\n\n" +
+				"Ссылка: [ЗДЕСЬ](https://how-internet-works.com)\n\n" +
 				"❤️ PDA",
 			Views:    15000,
 			Forwards: 420,
@@ -258,6 +258,34 @@ func TestGenerateExtractiveDigest_NoiseAndGossipScrubbing(t *testing.T) {
 			ChannelID: 400,
 			MsgID:     104,
 			Date:      now.Add(-3 * time.Hour),
+			Text: "GTA 6 можно будет запустить на взломанной PS5 — новая версия джейлбрейка для версии 14.22 выйдет уже ЗАВТРА\n" +
+				"Пару часов назад стало известно, что именно эта версия прошивки поддалась взлому.\n" +
+				"❤️ PDA",
+			Views:    35000,
+			Forwards: 1500,
+		},
+		{
+			ChannelID: 400,
+			MsgID:     105,
+			Date:      now.Add(-3 * time.Hour),
+			Text: "Baldur's Gate теперь Warhammer — новая Warhammer 40,000: Dark Heresy выйдет 28 января Это большая cRPG про расследования в космосе.\n" +
+				"Вы будете работать на Инквизицию: расследовать заговоры, допрашивать свидетелей и искать врагов Империума.",
+			Views:    18000,
+			Forwards: 500,
+		},
+		{
+			ChannelID: 400,
+			MsgID:     106,
+			Date:      now.Add(-2 * time.Hour),
+			Text: "Нормана Ридуса не узнать: Death Stranding получит аниме-адаптацию Kojima Productions показала первый тизер сериала Death Stranding Isolations.\n" +
+				"События развернутся вскоре после первой игры.",
+			Views:    14000,
+			Forwards: 400,
+		},
+		{
+			ChannelID: 400,
+			MsgID:     107,
+			Date:      now.Add(-2 * time.Hour),
 			Text: "Дрозофилу заставили 31 час подряд смотреть уроки по C++, чтобы превратить обычную муху в настоящего программиста.\n" +
 				"Теперь осталось выяснить, научилась ли она писать код.\n" +
 				"❤️ PDA",
@@ -266,8 +294,8 @@ func TestGenerateExtractiveDigest_NoiseAndGossipScrubbing(t *testing.T) {
 		},
 		{
 			ChannelID: 400,
-			MsgID:     105,
-			Date:      now.Add(-2 * time.Hour),
+			MsgID:     108,
+			Date:      now.Add(-1 * time.Hour),
 			Text: "В Телеграм могут появится сердечки вместо кружочков — команда мессенджера показала концепт других форматов для видеосообщений.\n" +
 				"❤️ PDA",
 			Views:    12000,
@@ -275,8 +303,8 @@ func TestGenerateExtractiveDigest_NoiseAndGossipScrubbing(t *testing.T) {
 		},
 		{
 			ChannelID: 400,
-			MsgID:     106,
-			Date:      now.Add(-1 * time.Hour),
+			MsgID:     109,
+			Date:      now.Add(-30 * time.Minute),
 			Text: "Anthropic выпустила сразу две новые нейросети — Claude Fable 5.2 и Claude Mythos 5.2.\n" +
 				"По заявлению компании, обе модели превосходят Opus 5.5 по большинству показателей. ❤️ PDA\n" +
 				"• Fable 5.2 генерирует ответы до 30% быстрее предшественницы.\n" +
@@ -296,11 +324,19 @@ func TestGenerateExtractiveDigest_NoiseAndGossipScrubbing(t *testing.T) {
 	md := digest.SummaryMarkdown
 
 	// 1. Actionable technical posts MUST be present
-	if !strings.Contains(md, "Как устроен интернет") {
-		t.Errorf("expected technical educational post to be included, got:\n%s", md)
+	if !strings.Contains(md, "- **Как устроен интернет — теперь можно изучить на одном сайте**") {
+		t.Errorf("expected clean separate headline for internet post, got:\n%s", md)
 	}
-	if !strings.Contains(md, "https://how-internet-works.com") {
-		t.Errorf("expected embedded hyperlink to be extracted, got:\n%s", md)
+	if !strings.Contains(md, "Нашли интерактивный учебник, который наглядно разбирает работу 14 сетевых протоколов.") {
+		t.Errorf("expected substantive body for internet post, got:\n%s", md)
+	}
+	// Verify generic label [ЗДЕСЬ] replaced with clean domain label
+	if !strings.Contains(md, "[how-internet-works.com](https://how-internet-works.com)") {
+		t.Errorf("expected clean domain link instead of [ЗДЕСЬ], got:\n%s", md)
+	}
+	// Verify Telegram Post link was generated for channel without username
+	if !strings.Contains(md, "https://t.me/c/400/101") {
+		t.Errorf("expected https://t.me/c/400/101 post link, got:\n%s", md)
 	}
 	if !strings.Contains(md, "Claude Fable 5.2 и Claude Mythos 5.2") {
 		t.Errorf("expected AI breakthrough post to be included, got:\n%s", md)
@@ -309,12 +345,21 @@ func TestGenerateExtractiveDigest_NoiseAndGossipScrubbing(t *testing.T) {
 		t.Errorf("expected Anthropic announcement link, got:\n%s", md)
 	}
 
-	// 2. Gossip, scandals, game preload schedules, and meme posts MUST be excluded
+	// 2. Gossip, scandals, game preload schedules, console jailbreaks, and meme posts MUST be excluded
 	if strings.Contains(md, "Дженсен Хуанг") || strings.Contains(md, "изменил жене") {
 		t.Errorf("gossip/scandal post was NOT filtered out:\n%s", md)
 	}
 	if strings.Contains(md, "Предзагрузка GTA 6") || strings.Contains(md, "новозеландский регион") {
 		t.Errorf("game preload schedule was NOT filtered out:\n%s", md)
+	}
+	if strings.Contains(md, "джейлбрейка") || strings.Contains(md, "взломанной PS5") {
+		t.Errorf("PS5 console jailbreak post was NOT filtered out:\n%s", md)
+	}
+	if strings.Contains(md, "Baldur's Gate теперь Warhammer") || strings.Contains(md, "Dark Heresy") {
+		t.Errorf("Warhammer game release post was NOT filtered out:\n%s", md)
+	}
+	if strings.Contains(md, "Нормана Ридуса") || strings.Contains(md, "Death Stranding") {
+		t.Errorf("Death Stranding anime post was NOT filtered out:\n%s", md)
 	}
 	if strings.Contains(md, "Дрозофилу") || strings.Contains(md, "муху в настоящего программиста") {
 		t.Errorf("meme post was NOT filtered out:\n%s", md)
@@ -326,5 +371,13 @@ func TestGenerateExtractiveDigest_NoiseAndGossipScrubbing(t *testing.T) {
 	// 3. Channel watermarks/signatures like "❤️ PDA" MUST be stripped
 	if strings.Contains(md, "❤️ PDA") || strings.Contains(md, "❤️ 4PDA") {
 		t.Errorf("channel watermark '❤️ PDA' was NOT stripped:\n%s", md)
+	}
+
+	// 4. Verification of counts: 7 noise posts were filtered out. Must NOT say "... and 7 more posts in this channel"
+	if strings.Contains(md, "more posts in this channel") {
+		t.Errorf("erroneous 'more posts in this channel' was output when all substantive posts were displayed:\n%s", md)
+	}
+	if !strings.Contains(md, "(7 noise/fluff posts filtered out by relevance criteria)") {
+		t.Errorf("expected explicit notification about 7 filtered noise posts, got:\n%s", md)
 	}
 }

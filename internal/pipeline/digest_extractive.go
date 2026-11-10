@@ -128,42 +128,46 @@ func GenerateExtractiveDigestWithTitle(customTitle string, topic string, posts [
 		ch := channelMap[s.id]
 
 		channelTitle := s.title
+		chURL := buildChannelURL(ch)
 		var channelHeader string
-		if ch != nil && ch.Username != "" {
-			channelHeader = fmt.Sprintf("### 📢 [%s](https://t.me/%s)", channelTitle, ch.Username)
+		if chURL != "" {
+			channelHeader = fmt.Sprintf("### 📢 [%s](%s)", channelTitle, chURL)
 		} else {
 			channelHeader = fmt.Sprintf("### 📢 %s", channelTitle)
 		}
 		sb.WriteString(channelHeader + "\n\n")
 
-		// Sort posts within channel: substance & high-signal technical value first
-		sort.Slice(chPosts, func(i, j int) bool {
-			scoreI := calculatePostSubstanceScore(chPosts[i])
-			scoreJ := calculatePostSubstanceScore(chPosts[j])
+		// Separate relevant substantive posts from low-value noise/gossip
+		var relevantPosts []*domain.Post
+		var filteredNoiseCount int
+		for _, p := range chPosts {
+			if calculatePostSubstanceScore(p) < 0 {
+				filteredNoiseCount++
+			} else {
+				relevantPosts = append(relevantPosts, p)
+			}
+		}
+
+		// Sort relevant posts by substance & high-signal technical value first
+		sort.Slice(relevantPosts, func(i, j int) bool {
+			scoreI := calculatePostSubstanceScore(relevantPosts[i])
+			scoreJ := calculatePostSubstanceScore(relevantPosts[j])
 			if scoreI != scoreJ {
 				return scoreI > scoreJ
 			}
-			return chPosts[i].Date.After(chPosts[j].Date)
+			return relevantPosts[i].Date.After(relevantPosts[j].Date)
 		})
 
-		// Include top posts (up to 10 per channel), omitting noise/gossip
+		// Include top posts (up to 10 per channel)
 		displayLimit := 10
 		countIncluded := 0
 
-		for _, p := range chPosts {
+		for _, p := range relevantPosts {
 			if countIncluded >= displayLimit {
 				break
 			}
 
-			// Filter out low-value gossip, scandal, or meme posts
-			if calculatePostSubstanceScore(p) < 0 {
-				continue
-			}
-
-			var postURL string
-			if ch != nil && ch.Username != "" {
-				postURL = fmt.Sprintf("https://t.me/%s/%d", ch.Username, p.MsgID)
-			}
+			postURL := buildPostURL(ch, p.MsgID)
 
 			headline, body, bullets, links := extractPostSummary(p.Text)
 			if headline == "" && body == "" && len(bullets) == 0 {
@@ -175,9 +179,12 @@ func GenerateExtractiveDigestWithTitle(customTitle string, topic string, posts [
 			countIncluded++
 		}
 
-		if len(chPosts) > countIncluded && countIncluded > 0 {
-			remaining := len(chPosts) - countIncluded
-			sb.WriteString(fmt.Sprintf("*... and %d more posts in this channel*\n\n", remaining))
+		remainingRelevant := len(relevantPosts) - countIncluded
+		if remainingRelevant > 0 {
+			sb.WriteString(fmt.Sprintf("*... and %d more substantive posts in this channel*\n\n", remainingRelevant))
+		}
+		if filteredNoiseCount > 0 {
+			sb.WriteString(fmt.Sprintf("*(%d noise/fluff posts filtered out by relevance criteria)*\n\n", filteredNoiseCount))
 		}
 	}
 
@@ -263,48 +270,68 @@ func extractPostSummary(text string) (headline string, body string, bullets []st
 		return headline, "", bullets, links
 	}
 
-	joinedProse := strings.Join(proseLines, " ")
-	sentences := splitSentences(joinedProse)
-
-	if len(sentences) == 0 {
-		if len(proseLines) > 0 {
-			headline = cleanHeadline(proseLines[0])
-		}
-		return headline, body, bullets, links
+	if len(proseLines) == 0 {
+		return "", "", bullets, links
 	}
 
-	firstSentence := sentences[0]
-	rFirst := []rune(firstSentence)
+	firstLine := proseLines[0]
+	rFirstLine := []rune(firstLine)
 
-	// If first sentence is short (< 120 runes) or ends with a colon, treat as headline
-	if len(rFirst) <= 120 || strings.HasSuffix(firstSentence, ":") {
-		headline = cleanHeadline(firstSentence)
-		// Gather body from next 1-3 sentences without cutting mid-sentence
-		var bodyParts []string
-		bodyRunes := 0
-		for _, s := range sentences[1:] {
-			sRunes := len([]rune(s))
-			if bodyRunes+sRunes > 380 && len(bodyParts) > 0 {
-				break
+	// In Telegram channels, the first line is typically a concise headline (<= 140 runes).
+	// If so, treat proseLines[0] as the headline and remaining proseLines[1:] as the body.
+	if len(rFirstLine) <= 140 || strings.HasSuffix(firstLine, ":") {
+		headline = cleanHeadline(firstLine)
+		if len(proseLines) > 1 {
+			remainingProse := strings.Join(proseLines[1:], " ")
+			sentences := splitSentences(remainingProse)
+			var bodyParts []string
+			bodyRunes := 0
+			for _, s := range sentences {
+				sRunes := len([]rune(s))
+				if bodyRunes+sRunes > 380 && len(bodyParts) > 0 {
+					break
+				}
+				bodyParts = append(bodyParts, s)
+				bodyRunes += sRunes
+				if len(bodyParts) >= 3 {
+					break
+				}
 			}
-			bodyParts = append(bodyParts, s)
-			bodyRunes += sRunes
-			if len(bodyParts) >= 3 {
-				break
-			}
+			body = strings.Join(bodyParts, " ")
 		}
-		body = strings.Join(bodyParts, " ")
 	} else {
-		// First sentence is substantive; use it as headline if no body, or split cleanly
-		if len(sentences) > 1 {
-			headline = cleanHeadline(firstSentence)
-			body = sentences[1]
-		} else {
-			headline = cleanHeadline(firstSentence)
+		// Single long paragraph where first line is itself > 140 runes. Split by sentence.
+		joinedProse := strings.Join(proseLines, " ")
+		sentences := splitSentences(joinedProse)
+		if len(sentences) > 0 {
+			headline = cleanHeadline(sentences[0])
+			if len(sentences) > 1 {
+				var bodyParts []string
+				bodyRunes := 0
+				for _, s := range sentences[1:] {
+					sRunes := len([]rune(s))
+					if bodyRunes+sRunes > 380 && len(bodyParts) > 0 {
+						break
+					}
+					bodyParts = append(bodyParts, s)
+					bodyRunes += sRunes
+					if len(bodyParts) >= 3 {
+						break
+					}
+				}
+				body = strings.Join(bodyParts, " ")
+			}
 		}
 	}
 
 	return headline, body, bullets, links
+}
+
+var genericLinkLabels = map[string]bool{
+	"здесь": true, "тут": true, "клик": true, "ссылке": true, "ссылка": true,
+	"here": true, "click": true, "link": true, "source": true, "подробнее": true,
+	"источник": true, "читать": true, "сайт": true, "подробнее по ссылке": true,
+	"перейти": true, "по ссылке": true,
 }
 
 // extractLinks identifies external resources, GitHub repositories, and documentation URLs.
@@ -326,7 +353,7 @@ func extractLinks(text string) []ExtractedLink {
 		if isGH {
 			results = append(results, ExtractedLink{Label: ghLabel, URL: rawURL, IsGitHub: true})
 		} else {
-			if label == "" || strings.HasPrefix(label, "http") {
+			if label == "" || strings.HasPrefix(label, "http") || genericLinkLabels[strings.ToLower(label)] {
 				label = cleanURLLabel(rawURL)
 			}
 			results = append(results, ExtractedLink{Label: label, URL: rawURL, IsGitHub: false})
@@ -410,6 +437,45 @@ func cleanURLLabel(rawURL string) string {
 	return host
 }
 
+func cleanChannelIDForURL(id int64) string {
+	s := fmt.Sprintf("%d", id)
+	s = strings.TrimPrefix(s, "-100")
+	s = strings.TrimPrefix(s, "-")
+	return s
+}
+
+func buildChannelURL(ch *domain.Channel) string {
+	if ch == nil {
+		return ""
+	}
+	if ch.Username != "" {
+		return fmt.Sprintf("https://t.me/%s", ch.Username)
+	}
+	if ch.ID != 0 {
+		cidStr := cleanChannelIDForURL(ch.ID)
+		if cidStr != "" {
+			return fmt.Sprintf("https://t.me/c/%s", cidStr)
+		}
+	}
+	return ""
+}
+
+func buildPostURL(ch *domain.Channel, msgID int) string {
+	if ch == nil || msgID <= 0 {
+		return ""
+	}
+	if ch.Username != "" {
+		return fmt.Sprintf("https://t.me/%s/%d", ch.Username, msgID)
+	}
+	if ch.ID != 0 {
+		cidStr := cleanChannelIDForURL(ch.ID)
+		if cidStr != "" {
+			return fmt.Sprintf("https://t.me/c/%s/%d", cidStr, msgID)
+		}
+	}
+	return ""
+}
+
 var promoKeywords = []string{
 	"подписывайтесь",
 	"подпишись",
@@ -443,6 +509,7 @@ var watermarkSuffixRegex = regexp.MustCompile(`(?i)\s*(?:[|—–-]\s*|❤️|�
 var pureWatermarkRegex = regexp.MustCompile(`(?i)^(?:[|—–-]\s*|❤️|🔥|👍)?\s*(?:pda|4pda|habr|хабр|tproger|тпрогер|tg|chat|channel|@[\w_]+)\s*$`)
 
 var gossipAndFluffKeywords = []string{
+	// Gossip & relationship drama
 	"изменил жене",
 	"изменила мужу",
 	"скандал вокруг главы",
@@ -450,12 +517,30 @@ var gossipAndFluffKeywords = []string{
 	"развод ",
 	"расстались",
 	"измена",
+	// Gaming releases, console jailbreaks, preloads, and game-specific adaptations
 	"предзагрузк",
 	"preload",
 	"скачать в psn",
 	"новозеландский регион",
 	"во сколько скачать",
-	"джейлбрейк для версии",
+	"джейлбрейк",
+	"jailbreak",
+	"gta 6",
+	"gta vi",
+	"гта 6",
+	"гта vi",
+	"ps5",
+	"ps4",
+	"xbox series",
+	"death stranding",
+	"коджим",
+	"kojima",
+	"аниме-адаптац",
+	"dark heresy",
+	"warhammer 40,000",
+	"warhammer 40k",
+	"baldur's gate теперь",
+	// Memes and trivial cosmetic rumors
 	"дрозофилу заставили",
 	"муху заставили",
 	"муху превратить",

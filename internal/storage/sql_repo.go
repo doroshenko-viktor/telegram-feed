@@ -270,6 +270,7 @@ func (r *SQLRepository) UpsertPosts(ctx context.Context, posts []*domain.Post) e
 			channel_id, msg_id, date, text, views, forwards, has_media, is_ad, is_read, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT (channel_id, msg_id) DO UPDATE SET
+			text = excluded.text,
 			views = excluded.views,
 			forwards = excluded.forwards
 	`

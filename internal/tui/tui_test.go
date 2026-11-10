@@ -520,3 +520,48 @@ func TestTUI_UserPersonalizationSettings(t *testing.T) {
 		t.Errorf("expected saved ignored topics to contain 'Celebrity gossip', got: %s", valIgnored)
 	}
 }
+
+func TestTUI_WrapMarkdownLines(t *testing.T) {
+	longMarkdown := `# 📰 Telegram Digest: High-Signal Engineering
+
+- **Как устроен интернет — теперь можно изучить на одном сайте**
+  Нашли интерактивный учебник, который наглядно разбирает работу 14 сетевых протоколов. На примерах объясняют, как работает TCP и каким образом DNS находит нужный сайт в сети.
+  • Fable 5.2 генерирует ответы до 30% быстрее предшественницы.
+  🔗 [how-internet-works.com](https://how-internet-works.com) • [Telegram Post ↗](https://t.me/c/400/101)`
+
+	targetWidth := 50
+	lines := wrapMarkdownLines(longMarkdown, targetWidth)
+
+	if len(lines) == 0 {
+		t.Fatal("expected wrapped lines, got empty slice")
+	}
+
+	// Verify that each line's visual rune length is within targetWidth (with small margin for ANSI/whitespace)
+	for i, l := range lines {
+		// Strip ANSI codes if any
+		clean := cleanANSI(l)
+		runes := len([]rune(clean))
+		if runes > targetWidth+5 {
+			t.Errorf("line %d exceeded target width %d (got %d runes): %s", i, targetWidth, runes, clean)
+		}
+	}
+}
+
+func cleanANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if r == 'm' {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
