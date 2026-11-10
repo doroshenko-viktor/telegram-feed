@@ -136,24 +136,30 @@ func GenerateExtractiveDigestWithTitle(customTitle string, topic string, posts [
 		}
 		sb.WriteString(channelHeader + "\n\n")
 
-		// Sort posts within channel: higher engagement first
+		// Sort posts within channel: substance & high-signal technical value first
 		sort.Slice(chPosts, func(i, j int) bool {
-			scoreI := chPosts[i].Views + chPosts[i].Forwards*5
-			scoreJ := chPosts[j].Views + chPosts[j].Forwards*5
+			scoreI := calculatePostSubstanceScore(chPosts[i])
+			scoreJ := calculatePostSubstanceScore(chPosts[j])
 			if scoreI != scoreJ {
 				return scoreI > scoreJ
 			}
 			return chPosts[i].Date.After(chPosts[j].Date)
 		})
 
-		// Include top posts (up to 10 per channel)
+		// Include top posts (up to 10 per channel), omitting noise/gossip
 		displayLimit := 10
-		if len(chPosts) < displayLimit {
-			displayLimit = len(chPosts)
-		}
+		countIncluded := 0
 
-		for i := 0; i < displayLimit; i++ {
-			p := chPosts[i]
+		for _, p := range chPosts {
+			if countIncluded >= displayLimit {
+				break
+			}
+
+			// Filter out low-value gossip, scandal, or meme posts
+			if calculatePostSubstanceScore(p) < 0 {
+				continue
+			}
+
 			var postURL string
 			if ch != nil && ch.Username != "" {
 				postURL = fmt.Sprintf("https://t.me/%s/%d", ch.Username, p.MsgID)
@@ -166,10 +172,12 @@ func GenerateExtractiveDigestWithTitle(customTitle string, topic string, posts [
 
 			entry := formatPostEntry(headline, body, bullets, links, postURL)
 			sb.WriteString(entry)
+			countIncluded++
 		}
 
-		if len(chPosts) > displayLimit {
-			sb.WriteString(fmt.Sprintf("*... and %d more posts in this channel*\n\n", len(chPosts)-displayLimit))
+		if len(chPosts) > countIncluded && countIncluded > 0 {
+			remaining := len(chPosts) - countIncluded
+			sb.WriteString(fmt.Sprintf("*... and %d more posts in this channel*\n\n", remaining))
 		}
 	}
 
@@ -431,6 +439,86 @@ var promoKeywords = []string{
 	"hit like",
 }
 
+var watermarkSuffixRegex = regexp.MustCompile(`(?i)\s*(?:[|—–-]\s*|❤️|🔥|👍)\s*(?:pda|4pda|habr|хабр|tproger|тпрогер|tg|chat|channel|@[\w_]+)\s*$`)
+var pureWatermarkRegex = regexp.MustCompile(`(?i)^(?:[|—–-]\s*|❤️|🔥|👍)?\s*(?:pda|4pda|habr|хабр|tproger|тпрогер|tg|chat|channel|@[\w_]+)\s*$`)
+
+var gossipAndFluffKeywords = []string{
+	"изменил жене",
+	"изменила мужу",
+	"скандал вокруг главы",
+	"любовниц",
+	"развод ",
+	"расстались",
+	"измена",
+	"предзагрузк",
+	"preload",
+	"скачать в psn",
+	"новозеландский регион",
+	"во сколько скачать",
+	"джейлбрейк для версии",
+	"дрозофилу заставили",
+	"муху заставили",
+	"муху превратить",
+	"шутка дня",
+	"сердечки вместо кружочков",
+	"вместо кружочков",
+}
+
+func isGossipOrLowValueFluff(text string) bool {
+	lower := strings.ToLower(text)
+	for _, kw := range gossipAndFluffKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func calculatePostSubstanceScore(p *domain.Post) int {
+	text := p.Text
+	lower := strings.ToLower(text)
+
+	// Heavy penalty for gossip, scandals, preload schedules, memes
+	if isGossipOrLowValueFluff(lower) {
+		return -1000
+	}
+
+	score := 0
+
+	// GitHub repo presence is the highest signal of actionable tech (+500)
+	if strings.Contains(lower, "github.com/") {
+		score += 500
+	}
+
+	// External URLs / documentation links (+250)
+	if strings.Contains(lower, "http://") || strings.Contains(lower, "https://") {
+		score += 250
+	}
+
+	// Technical release / breakthrough keywords (+50 each)
+	techKeywords := []string{
+		"релиз", "release", "версия", "выпустил", "анонсировал",
+		"библиотек", "инструмент", "фреймворк", "учебник",
+		"архитектур", "протокол", "benchmark", "алгоритм",
+		"нейросеть", "модель", "стартап", "открытый исходный",
+	}
+	for _, kw := range techKeywords {
+		if strings.Contains(lower, kw) {
+			score += 50
+		}
+	}
+
+	// If message has bullet points / features (+50)
+	if strings.Contains(text, "\n- ") || strings.Contains(text, "\n• ") || strings.Contains(text, "\n* ") {
+		score += 50
+	}
+
+	// Add normalized engagement (views/1000 + forwards*2)
+	score += (p.Views / 1000) + (p.Forwards * 2)
+
+	return score
+}
+
 func cleanPostLines(text string) []string {
 	lines := strings.Split(text, "\n")
 	var cleaned []string
@@ -442,6 +530,18 @@ func cleanPostLines(text string) []string {
 		}
 
 		if isHashtagLine(trimmed) {
+			continue
+		}
+
+		// Strip standalone channel signatures / watermarks
+		if pureWatermarkRegex.MatchString(trimmed) {
+			continue
+		}
+
+		// Strip trailing watermark from line
+		trimmed = watermarkSuffixRegex.ReplaceAllString(trimmed, "")
+		trimmed = strings.TrimSpace(trimmed)
+		if trimmed == "" {
 			continue
 		}
 

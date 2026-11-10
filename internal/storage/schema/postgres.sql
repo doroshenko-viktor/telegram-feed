@@ -15,6 +15,11 @@ INSERT INTO settings (key, value) VALUES (
     'digest_prompt',
     'You are an expert technical digest editor. Create a concise, high-signal, professional Telegram digest about [{{topic}}] from the following raw posts.
 
+USER RELEVANCE & FOCUS CRITERIA:
+- HIGH-PRIORITY TOPICS: {{user_interests}}
+- STRICTLY EXCLUDE: {{user_ignored_topics}}
+If a post covers celebrity gossip, relationship drama, game preload dates, or memes, DISCARD IT ENTIRELY. Do not include it in the digest.
+
 STRICT EDITORIAL REQUIREMENTS:
 1. PRESERVE ALL TECHNICAL RESOURCES & LINKS:
    - Extract and preserve every GitHub repository, project link, documentation URL, and external article mentioned in the posts.
@@ -42,6 +47,11 @@ STRICT EDITORIAL REQUIREMENTS:
    - 📌 Quick Updates (Noteworthy shorter items)
    (Omit any section that has no relevant items).'
 ) ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO settings (key, value) VALUES
+    ('user_interests', 'Breakthrough technologies, practical developer tools, software architecture, open source projects, AI research, actionable productivity knowledge'),
+    ('user_ignored_topics', 'Celebrity/executive gossip, relationship scandals, gaming release dates/preloads/timezones, memes/jokes, trivial social media UI rumors, clickbait drama')
+ON CONFLICT (key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS ad_patterns (
     id BIGSERIAL PRIMARY KEY,

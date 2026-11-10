@@ -445,3 +445,78 @@ func TestTUI_DigestByTagsScope(t *testing.T) {
 		t.Fatal("expected non-nil tea.Cmd for digest generation")
 	}
 }
+
+func TestTUI_UserPersonalizationSettings(t *testing.T) {
+	m, repo, _ := setupTestTUI(t)
+	ctx := context.Background()
+
+	// Switch to Settings view
+	m.activeView = ViewSettings
+	items := m.getSettingItems()
+
+	// Find indexes for User High-Priority Interests and Noise & Ignored Topics
+	interestsIdx := -1
+	ignoredIdx := -1
+	for idx, item := range items {
+		if item.Key == domain.SettingKeyUserInterests {
+			interestsIdx = idx
+		}
+		if item.Key == domain.SettingKeyUserIgnoredTopics {
+			ignoredIdx = idx
+		}
+	}
+
+	if interestsIdx == -1 || ignoredIdx == -1 {
+		t.Fatalf("could not find personalization settings items: interests=%d, ignored=%d", interestsIdx, ignoredIdx)
+	}
+
+	// 1. Edit User High-Priority Interests
+	m.settingsCursor = interestsIdx
+	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if !m.editingSetting {
+		t.Fatal("expected editingSetting to be true after Enter")
+	}
+
+	m.settingInput.SetValue("Golang internals, Kubernetes operators, AI breakthroughs, Open source libraries")
+	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if m.editingSetting {
+		t.Fatal("expected editingSetting to be false after Enter")
+	}
+
+	val, err := repo.GetSetting(ctx, domain.SettingKeyUserInterests, "")
+	if err != nil {
+		t.Fatalf("failed to get user interests setting: %v", err)
+	}
+	if !strings.Contains(val, "Kubernetes operators") {
+		t.Errorf("expected saved interests to contain 'Kubernetes operators', got: %s", val)
+	}
+
+	// 2. Edit Noise & Ignored Topics
+	m.settingsCursor = ignoredIdx
+	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if !m.editingSetting {
+		t.Fatal("expected editingSetting to be true after Enter on ignored topics")
+	}
+
+	m.settingInput.SetValue("Celebrity gossip, relationship drama, game preload dates, meme videos")
+	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if m.editingSetting {
+		t.Fatal("expected editingSetting to be false after Enter")
+	}
+
+	valIgnored, err := repo.GetSetting(ctx, domain.SettingKeyUserIgnoredTopics, "")
+	if err != nil {
+		t.Fatalf("failed to get user ignored topics setting: %v", err)
+	}
+	if !strings.Contains(valIgnored, "Celebrity gossip") {
+		t.Errorf("expected saved ignored topics to contain 'Celebrity gossip', got: %s", valIgnored)
+	}
+}

@@ -266,6 +266,13 @@ func (s *FeedService) GenerateDigestWithOptions(ctx context.Context, opts Digest
 		promptTemplate = domain.DefaultDigestPrompt
 	}
 
+	userInterests, _ := s.repo.GetSetting(ctx, domain.SettingKeyUserInterests, domain.DefaultUserInterests)
+	userIgnored, _ := s.repo.GetSetting(ctx, domain.SettingKeyUserIgnoredTopics, domain.DefaultUserIgnoredTopics)
+
+	// Interpolate user personal relevance profile into prompt template
+	promptTemplate = strings.ReplaceAll(promptTemplate, "{{user_interests}}", userInterests)
+	promptTemplate = strings.ReplaceAll(promptTemplate, "{{user_ignored_topics}}", userIgnored)
+
 	var digest *domain.Digest
 	if s.llmProv != nil && s.llmProv.HasAI() {
 		d, err := s.llmProv.GenerateDigest(ctx, topic, posts, channels, promptTemplate)

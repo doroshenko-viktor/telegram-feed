@@ -64,6 +64,8 @@ type Model struct {
 	filterAdsGlobal    string
 	minPostLength      string
 	digestPrompt       string
+	userInterests      string
+	userIgnoredTopics  string
 	editingPrompt      bool
 	promptTextArea     textarea.Model
 
@@ -198,6 +200,8 @@ func (m *Model) reloadSettingsAndPatterns() {
 	m.filterAdsGlobal, _ = m.repo.GetSetting(ctx, domain.SettingKeyFilterAds, "true")
 	m.minPostLength, _ = m.repo.GetSetting(ctx, domain.SettingKeyMinPostLength, "20")
 	m.digestPrompt, _ = m.repo.GetSetting(ctx, domain.SettingKeyDigestPrompt, domain.DefaultDigestPrompt)
+	m.userInterests, _ = m.repo.GetSetting(ctx, domain.SettingKeyUserInterests, domain.DefaultUserInterests)
+	m.userIgnoredTopics, _ = m.repo.GetSetting(ctx, domain.SettingKeyUserIgnoredTopics, domain.DefaultUserIgnoredTopics)
 }
 
 func (m *Model) getSettingItems() []SettingItem {
@@ -269,6 +273,18 @@ func (m *Model) getSettingItems() []SettingItem {
 			Label:       "AI Digest Prompt Template",
 			Description: "System prompt for AI summarization (Enter to edit full prompt)",
 			Value:       promptDisplay,
+		},
+		{
+			Key:         domain.SettingKeyUserInterests,
+			Label:       "User High-Priority Interests",
+			Description: "Topics you care about: tech breakthroughs, tools, AI (Enter to edit)",
+			Value:       truncateRunes(m.userInterests, 24),
+		},
+		{
+			Key:         domain.SettingKeyUserIgnoredTopics,
+			Label:       "Noise & Ignored Topics",
+			Description: "Topics to drop: gossip, scandals, game preloads, memes (Enter to edit)",
+			Value:       truncateRunes(m.userIgnoredTopics, 24),
 		},
 		{
 			Key:         domain.SettingKeyFilterAds,
@@ -971,6 +987,10 @@ func (m *Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				curVal = m.cronSchedule
 			case domain.SettingKeyMinPostLength:
 				curVal = m.minPostLength
+			case domain.SettingKeyUserInterests:
+				curVal = m.userInterests
+			case domain.SettingKeyUserIgnoredTopics:
+				curVal = m.userIgnoredTopics
 			case domain.SettingKeyGeminiAPIKey:
 				curVal = ""
 			}

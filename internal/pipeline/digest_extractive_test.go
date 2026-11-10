@@ -209,3 +209,122 @@ func TestGenerateExtractiveDigest_Empty(t *testing.T) {
 		t.Fatal("expected error for empty posts, got nil")
 	}
 }
+
+func TestGenerateExtractiveDigest_NoiseAndGossipScrubbing(t *testing.T) {
+	now := time.Now()
+	channels := []*domain.Channel{
+		{
+			ID:       400,
+			Title:    "4PDA Community",
+			Username: "four_pda",
+		},
+	}
+
+	posts := []*domain.Post{
+		{
+			ChannelID: 400,
+			MsgID:     101,
+			Date:      now.Add(-6 * time.Hour),
+			Text: "Как устроен интернет — теперь можно изучить на одном сайте.\n" +
+				"Нашли интерактивный учебник, который наглядно разбирает работу 14 сетевых протоколов.\n" +
+				"На примерах объясняют, как работает TCP и каким образом DNS находит нужный сайт в сети.\n" +
+				"Ссылка: [Интерактивный учебник](https://how-internet-works.com)\n" +
+				"❤️ PDA",
+			Views:    15000,
+			Forwards: 420,
+		},
+		{
+			ChannelID: 400,
+			MsgID:     102,
+			Date:      now.Add(-5 * time.Hour),
+			Text: "Дженсен Хуанг изменил жене с китайской шпионкой — самый главный скандал в ИИ-сфере сгущается тучами вокруг главы Nvidia.\n" +
+				"Всё началось с расследования журналистов Financial Times. Со временем частые встречи переросли в предполагаемый роман.\n" +
+				"❤️ PDA",
+			Views:    50000,
+			Forwards: 2500, // Very viral gossip, would normally rank #1 by engagement
+		},
+		{
+			ChannelID: 400,
+			MsgID:     103,
+			Date:      now.Add(-4 * time.Hour),
+			Text: "Предзагрузка GTA 6 СТАРТОВАЛА — если у вас новозеландский регион в PSN, игру уже можно скачать.\n" +
+				"Для других стран предзагрузку подвезут позже:\n" +
+				"— Индия: 21:30 по Москве;\n" +
+				"Владельцы Xbox Series смогут загрузить игру в 03:00 по МСК 10 ноября вне зависимости от региона.",
+			Views:    30000,
+			Forwards: 1200,
+		},
+		{
+			ChannelID: 400,
+			MsgID:     104,
+			Date:      now.Add(-3 * time.Hour),
+			Text: "Дрозофилу заставили 31 час подряд смотреть уроки по C++, чтобы превратить обычную муху в настоящего программиста.\n" +
+				"Теперь осталось выяснить, научилась ли она писать код.\n" +
+				"❤️ PDA",
+			Views:    28000,
+			Forwards: 900,
+		},
+		{
+			ChannelID: 400,
+			MsgID:     105,
+			Date:      now.Add(-2 * time.Hour),
+			Text: "В Телеграм могут появится сердечки вместо кружочков — команда мессенджера показала концепт других форматов для видеосообщений.\n" +
+				"❤️ PDA",
+			Views:    12000,
+			Forwards: 300,
+		},
+		{
+			ChannelID: 400,
+			MsgID:     106,
+			Date:      now.Add(-1 * time.Hour),
+			Text: "Anthropic выпустила сразу две новые нейросети — Claude Fable 5.2 и Claude Mythos 5.2.\n" +
+				"По заявлению компании, обе модели превосходят Opus 5.5 по большинству показателей. ❤️ PDA\n" +
+				"• Fable 5.2 генерирует ответы до 30% быстрее предшественницы.\n" +
+				"• API стоит $8 за миллион входных и $40 за миллион выходных токенов.\n" +
+				"• Mythos 5.2 пока доступна только организациям со специальным разрешением.\n" +
+				"Официальный анонс: https://anthropic.com/news/claude-5-2",
+			Views:    22000,
+			Forwards: 1100,
+		},
+	}
+
+	digest, err := GenerateExtractiveDigest("tech", posts, channels)
+	if err != nil {
+		t.Fatalf("GenerateExtractiveDigest failed: %v", err)
+	}
+
+	md := digest.SummaryMarkdown
+
+	// 1. Actionable technical posts MUST be present
+	if !strings.Contains(md, "Как устроен интернет") {
+		t.Errorf("expected technical educational post to be included, got:\n%s", md)
+	}
+	if !strings.Contains(md, "https://how-internet-works.com") {
+		t.Errorf("expected embedded hyperlink to be extracted, got:\n%s", md)
+	}
+	if !strings.Contains(md, "Claude Fable 5.2 и Claude Mythos 5.2") {
+		t.Errorf("expected AI breakthrough post to be included, got:\n%s", md)
+	}
+	if !strings.Contains(md, "anthropic.com/news/claude-5-2") {
+		t.Errorf("expected Anthropic announcement link, got:\n%s", md)
+	}
+
+	// 2. Gossip, scandals, game preload schedules, and meme posts MUST be excluded
+	if strings.Contains(md, "Дженсен Хуанг") || strings.Contains(md, "изменил жене") {
+		t.Errorf("gossip/scandal post was NOT filtered out:\n%s", md)
+	}
+	if strings.Contains(md, "Предзагрузка GTA 6") || strings.Contains(md, "новозеландский регион") {
+		t.Errorf("game preload schedule was NOT filtered out:\n%s", md)
+	}
+	if strings.Contains(md, "Дрозофилу") || strings.Contains(md, "муху в настоящего программиста") {
+		t.Errorf("meme post was NOT filtered out:\n%s", md)
+	}
+	if strings.Contains(md, "сердечки вместо кружочков") {
+		t.Errorf("trivial cosmetic rumor was NOT filtered out:\n%s", md)
+	}
+
+	// 3. Channel watermarks/signatures like "❤️ PDA" MUST be stripped
+	if strings.Contains(md, "❤️ PDA") || strings.Contains(md, "❤️ 4PDA") {
+		t.Errorf("channel watermark '❤️ PDA' was NOT stripped:\n%s", md)
+	}
+}

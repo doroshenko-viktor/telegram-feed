@@ -145,13 +145,14 @@ func (c *Client) FetchChannelPosts(ctx context.Context, channel *domain.Channel,
 				}
 
 				postDate := time.Unix(int64(msg.Date), 0)
+				formattedText := FormatMessageWithEntities(msg.Message, msg.Entities)
 
 				// Album handling: if part of an album, consolidate into single post
 				if msg.GroupedID != 0 {
 					if existing, exists := groupedMap[msg.GroupedID]; exists {
 						// If this message has the caption and the existing one was empty, update text
-						if existing.Text == "" && msg.Message != "" {
-							existing.Text = msg.Message
+						if existing.Text == "" && formattedText != "" {
+							existing.Text = formattedText
 						}
 						existing.HasMedia = true
 						continue
@@ -162,7 +163,7 @@ func (c *Client) FetchChannelPosts(ctx context.Context, channel *domain.Channel,
 					ChannelID: channel.ID,
 					MsgID:     msg.ID,
 					Date:      postDate,
-					Text:      msg.Message,
+					Text:      formattedText,
 					Views:     msg.Views,
 					Forwards:  msg.Forwards,
 					HasMedia:  msg.Media != nil,

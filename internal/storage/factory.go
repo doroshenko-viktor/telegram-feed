@@ -103,4 +103,12 @@ func seedDefaultSettings(ctx context.Context, repo domain.Repository) {
 	if err == nil && strings.TrimSpace(val) == "" {
 		_ = repo.SetSetting(ctx, domain.SettingKeyDigestPrompt, domain.DefaultDigestPrompt)
 	}
+	valInt, err := repo.GetSetting(ctx, domain.SettingKeyUserInterests, "")
+	if err == nil && strings.TrimSpace(valInt) == "" {
+		_ = repo.SetSetting(ctx, domain.SettingKeyUserInterests, domain.DefaultUserInterests)
+	}
+	valIgn, err := repo.GetSetting(ctx, domain.SettingKeyUserIgnoredTopics, "")
+	if err == nil && strings.TrimSpace(valIgn) == "" {
+		_ = repo.SetSetting(ctx, domain.SettingKeyUserIgnoredTopics, domain.DefaultUserIgnoredTopics)
+	}
 }

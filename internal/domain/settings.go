@@ -15,12 +15,25 @@ const (
 	SettingKeyMinPostLength   = "min_post_length"
 	SettingKeyAdKeywords      = "ad_keywords"
 	SettingKeyCronSchedule    = "cron_schedule"
-	SettingKeyDeliverSaved    = "deliver_to_saved"
-	SettingKeyDigestPrompt    = "digest_prompt"
+	SettingKeyDeliverSaved      = "deliver_to_saved"
+	SettingKeyDigestPrompt      = "digest_prompt"
+	SettingKeyUserInterests     = "user_interests"
+	SettingKeyUserIgnoredTopics = "user_ignored_topics"
 )
+
+// DefaultUserInterests defines the default positive focus for digests.
+const DefaultUserInterests = "Breakthrough technologies, practical developer tools, software architecture, open source projects, AI research, actionable productivity knowledge"
+
+// DefaultUserIgnoredTopics defines the default negative filter to eliminate gossip, gaming fluff, and memes.
+const DefaultUserIgnoredTopics = "Celebrity/executive gossip, relationship scandals, gaming release dates/preloads/timezones, memes/jokes, trivial social media UI rumors, clickbait drama"
 
 // DefaultDigestPrompt is the seeded system prompt used for AI digest summarization.
 const DefaultDigestPrompt = `You are an expert technical digest editor. Create a concise, high-signal, professional Telegram digest about [{{topic}}] from the following raw posts.
+
+USER RELEVANCE & FOCUS CRITERIA:
+- HIGH-PRIORITY TOPICS: {{user_interests}}
+- STRICTLY EXCLUDE: {{user_ignored_topics}}
+If a post covers celebrity gossip, relationship drama, game preload dates, or memes, DISCARD IT ENTIRELY. Do not include it in the digest.
 
 STRICT EDITORIAL REQUIREMENTS:
 1. PRESERVE ALL TECHNICAL RESOURCES & LINKS:
