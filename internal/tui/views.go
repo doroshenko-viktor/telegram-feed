@@ -32,28 +32,54 @@ func (m *Model) View() string {
 	b.WriteString("\n\n")
 
 	// Main View Body
-	switch m.activeView {
-	case ViewChannels:
-		b.WriteString(m.renderChannelsView())
-	case ViewSettings:
-		b.WriteString(m.renderSettingsView())
-	case ViewPatterns:
-		b.WriteString(m.renderPatternsView())
-	case ViewDigests:
-		b.WriteString(m.renderDigestsView())
+	if m.showingDigestMenu {
+		b.WriteString(m.renderDigestMenuModal())
+	} else if m.readingFullDigest {
+		b.WriteString(m.renderFullDigestReader())
+	} else {
+		switch m.activeView {
+		case ViewChannels:
+			b.WriteString(m.renderChannelsView())
+		case ViewSettings:
+			b.WriteString(m.renderSettingsView())
+		case ViewPatterns:
+			b.WriteString(m.renderPatternsView())
+		case ViewDigests:
+			b.WriteString(m.renderDigestsView())
+		}
 	}
 
 	// Status Message
-	b.WriteString("\n")
-	if m.statusMsg != "" && time.Since(m.statusTime) < 5*time.Second {
-		b.WriteString(statusBarStyle.Width(m.width).Render("ℹ " + m.statusMsg))
-		b.WriteString("\n")
+	var statusLine string
+	if m.isBusy {
+		statusLine = statusBarStyle.Width(m.width).Render("⏳ " + m.busyAction)
+	} else if m.statusMsg != "" && time.Since(m.statusTime) < 5*time.Second {
+		statusLine = statusBarStyle.Width(m.width).Render("ℹ " + m.statusMsg)
 	}
 
-	// Help Bar - stretches across full width
-	b.WriteString(m.renderHelpBar())
+	helpBar := m.renderHelpBar()
 
-	return b.String()
+	// Fill remaining vertical height so help bar is pinned to the absolute bottom line of the terminal (100% height)
+	rendered := b.String()
+	lineCount := strings.Count(rendered, "\n")
+	bottomLines := 1 // helpBar
+	if statusLine != "" {
+		bottomLines += 2 // newline + statusLine
+	} else {
+		bottomLines += 1 // newline before helpBar
+	}
+
+	padLines := m.height - lineCount - bottomLines
+	if padLines > 0 {
+		rendered += strings.Repeat("\n", padLines)
+	}
+
+	if statusLine != "" {
+		rendered += "\n" + statusLine
+	}
+	rendered += "\n" + helpBar
+
+	return rendered
 }
 
 func (m *Model) getChannelColumnWidths() (titleWidth int, topicsWidth int) {
@@ -91,6 +117,10 @@ func truncateRunes(s string, maxLen int) string {
 }
 
 func (m *Model) renderChannelsView() string {
+	if m.showingChannelDetails {
+		return m.renderChannelDetailsView()
+	}
+
 	var b strings.Builder
 
 	// Filter Input (if active)
@@ -107,6 +137,10 @@ func (m *Model) renderChannelsView() string {
 	colTitleDynamic := lipgloss.NewStyle().Width(titleW)
 	colTopicsDynamic := lipgloss.NewStyle().Width(topicsW)
 
+	statsInfo := fmt.Sprintf(" 💾 Local Storage: %d posts cached (%d unread)  •  [s] Sync Telegram  •  [g] Digest Menu  •  [c] Channel Digest",
+		m.totalPosts, m.unreadPosts)
+	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#8E8EA0")).Render(statsInfo) + "\n\n")
+
 	// Table Header - strictly aligned to full terminal width
 	headerLine := headerStyle.Width(m.width).Render(
 		colPrefixStyle.Render(" ") +
@@ -118,9 +152,25 @@ func (m *Model) renderChannelsView() string {
 	)
 	b.WriteString(headerLine + "\n")
 
-	// Render rows
-	start := max(0, m.cursor-10)
-	end := min(len(m.filteredChannels), start+20)
+	// Dynamic vertical height calculation to fill available screen
+	overhead := 10
+	if m.filtering || m.filterInput.Value() != "" {
+		overhead += 2
+	}
+	tableHeight := max(5, m.height-overhead)
+
+	// Keep cursor within visible window
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	} else if m.cursor >= m.scrollOffset+tableHeight {
+		m.scrollOffset = m.cursor - tableHeight + 1
+	}
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
+
+	start := m.scrollOffset
+	end := min(len(m.filteredChannels), start+tableHeight)
 
 	for i := start; i < end; i++ {
 		ch := m.filteredChannels[i]
@@ -188,10 +238,124 @@ func (m *Model) renderChannelsView() string {
 		}
 	}
 
+	// Selected channel footer info
+	if len(m.filteredChannels) > 0 && m.cursor < len(m.filteredChannels) {
+		selectedCh := m.filteredChannels[m.cursor]
+		username := selectedCh.Username
+		if username == "" {
+			username = "private"
+		} else {
+			username = "@" + username
+		}
+		detailLine := fmt.Sprintf(" ── Channel [%d/%d]: %s (%s) • Watermark: Telegram Msg #%d ──",
+			m.cursor+1, len(m.filteredChannels), truncateRunes(selectedCh.Title, 40), username, selectedCh.LastSyncMsgID)
+		b.WriteString("\n" + lipgloss.NewStyle().Foreground(subtleColor).Render(detailLine) + "\n")
+	}
+
+	return b.String()
+}
+
+func (m *Model) renderChannelDetailsView() string {
+	if len(m.filteredChannels) == 0 || m.cursor >= len(m.filteredChannels) {
+		return "No channel selected."
+	}
+	ch := m.filteredChannels[m.cursor]
+
+	var b strings.Builder
+
+	boxWidth := min(86, m.width-4)
+	if boxWidth < 50 {
+		boxWidth = 50
+	}
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2).
+		Width(boxWidth)
+
+	var content strings.Builder
+	titleStr := fmt.Sprintf("📢 CHANNEL DETAILS: %s", ch.Title)
+	if ch.Username != "" {
+		titleStr += fmt.Sprintf(" (@%s)", ch.Username)
+	}
+	content.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(titleStr) + "\n")
+	content.WriteString(lipgloss.NewStyle().Foreground(subtleColor).Render(strings.Repeat("─", boxWidth-6)) + "\n\n")
+
+	// Badges
+	syncBadge := inactiveTagStyle.Render("[DISABLED]")
+	if ch.IsTracked {
+		syncBadge = activeTagStyle.Render("[ENABLED]")
+	}
+	mcpBadge := inactiveTagStyle.Render("[QUARANTINED]")
+	if ch.MCPAllowed {
+		mcpBadge = activeTagStyle.Render("[ALLOWED]")
+	}
+	adBadge := inactiveTagStyle.Render("[DISABLED]")
+	if ch.FilterAds {
+		adBadge = activeTagStyle.Render("[ENABLED]")
+	}
+
+	lblStyle := lipgloss.NewStyle().Bold(true).Width(16)
+	content.WriteString(fmt.Sprintf(" %s %s\n", lblStyle.Render("Channel ID:"), fmt.Sprintf("%d", ch.ID)))
+	if ch.Username != "" {
+		content.WriteString(fmt.Sprintf(" %s %s\n", lblStyle.Render("Telegram Link:"), fmt.Sprintf("https://t.me/%s", ch.Username)))
+	}
+	content.WriteString(fmt.Sprintf(" %s %s  %s\n", lblStyle.Render("Sync Tracking:"), syncBadge, lipgloss.NewStyle().Foreground(subtleColor).Render("(Space to toggle)")))
+	content.WriteString(fmt.Sprintf(" %s %s  %s\n", lblStyle.Render("MCP LLM Access:"), mcpBadge, lipgloss.NewStyle().Foreground(subtleColor).Render("(m to toggle)")))
+	content.WriteString(fmt.Sprintf(" %s %s  %s\n", lblStyle.Render("Ad Filtering:"), adBadge, lipgloss.NewStyle().Foreground(subtleColor).Render("(a to toggle)")))
+
+	cType := ch.ContentType
+	if cType == "" {
+		cType = "general"
+	}
+	lang := ch.Language
+	if lang == "" {
+		lang = "en"
+	}
+	content.WriteString(fmt.Sprintf(" %s %s  •  Language: %s\n", lblStyle.Render("Content Type:"), cType, lang))
+
+	if ch.About != "" {
+		content.WriteString(fmt.Sprintf("\n %s\n   %s\n", lblStyle.Render("Bio / About:"), lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC")).Render(ch.About)))
+	}
+	if ch.Summary != "" {
+		content.WriteString(fmt.Sprintf("\n %s\n   %s\n", lblStyle.Render("AI Summary:"), lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC")).Render(ch.Summary)))
+	}
+
+	content.WriteString("\n" + lipgloss.NewStyle().Foreground(subtleColor).Render(strings.Repeat("─", boxWidth-6)) + "\n")
+	content.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7AF")).Render("🏷️ TOPIC TAGS:") + "\n")
+
+	if m.editingChannelTags {
+		content.WriteString(" " + m.channelTagsInput.View() + "\n")
+		content.WriteString(" " + lipgloss.NewStyle().Foreground(subtleColor).Render("(Press [Enter] to save tags, [Esc] to cancel)\n"))
+	} else {
+		if len(ch.Topics) > 0 {
+			var tagBadges []string
+			for _, t := range ch.Topics {
+				tagBadges = append(tagBadges, lipgloss.NewStyle().
+					Background(lipgloss.Color("#332255")).
+					Foreground(lipgloss.Color("#DDAAEE")).
+					Padding(0, 1).
+					Render("#"+t))
+			}
+			content.WriteString("   " + strings.Join(tagBadges, "  ") + "\n\n")
+		} else {
+			content.WriteString("   " + lipgloss.NewStyle().Foreground(subtleColor).Render("No tags assigned yet.") + "\n\n")
+		}
+		content.WriteString("   " + lipgloss.NewStyle().Foreground(subtleColor).Render("Press [t] to edit/add tags (comma-separated, e.g. 'go, programming, ai')\n"))
+	}
+
+	content.WriteString("\n" + lipgloss.NewStyle().Foreground(subtleColor).Render("Controls: [t] Edit Tags  •  [Space] Sync  •  [m] MCP  •  [a] Ads  •  [Esc] Back to Channels"))
+
+	b.WriteString(borderStyle.Render(content.String()))
 	return b.String()
 }
 
 func (m *Model) renderSettingsView() string {
+	if m.editingPrompt {
+		return m.renderPromptEditorView()
+	}
+
 	var b strings.Builder
 
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(" ⚙ APPLICATION SETTINGS") + "\n")
@@ -248,6 +412,25 @@ func (m *Model) renderSettingsView() string {
 	}
 	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Render("  |  Telegram App Hash: ") + hasHash + "\n")
 
+	return b.String()
+}
+
+func (m *Model) renderPromptEditorView() string {
+	var b strings.Builder
+
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00D7AF")).Render(" 🤖 EDIT AI DIGEST PROMPT TEMPLATE") + "\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(
+		" Controls instructions given to the LLM when summarizing posts. Use [{{topic}}] for subject placeholder.\n"+
+			" Keys: [ctrl+s] Save to DB  •  [ctrl+r] Reset to Default Template  •  [Esc] Cancel\n\n",
+	))
+
+	contentBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(0, 1).
+		Render(m.promptTextArea.View())
+
+	b.WriteString(contentBox + "\n")
 	return b.String()
 }
 
@@ -343,14 +526,16 @@ func (m *Model) renderDigestsView() string {
 	b.WriteString(" Third-party LLMs can query these past digests directly over MCP without reading raw messages.\n\n")
 
 	if len(m.digests) == 0 {
-		b.WriteString("  No digests generated yet. Generate one with 'telegram-feed digest' or via your LLM chat.\n")
+		b.WriteString("  No digests generated yet. Press [g] to generate a digest from your stored posts.\n")
 		return b.String()
 	}
 
 	header := fmt.Sprintf("  %-25s %-12s %-10s %-12s", "DATE", "TOPIC", "POSTS", "MCP VISIBLE")
 	b.WriteString(headerStyle.Width(m.width).Render(header) + "\n")
 
-	for i, d := range m.digests {
+	maxDigestList := min(len(m.digests), 8)
+	for i := 0; i < maxDigestList; i++ {
+		d := m.digests[i]
 		mcpVis := inactiveTagStyle.Render("Quarantined")
 		if d.MCPVisible {
 			mcpVis = activeTagStyle.Render("Allowed")
@@ -362,7 +547,7 @@ func (m *Model) renderDigestsView() string {
 		}
 
 		dateStr := d.CreatedAt.Format("2006-01-02 15:04")
-		row := fmt.Sprintf("%s%-25s %-12s %-10d %-12s", prefix, dateStr, d.Topic, d.PostCount, mcpVis)
+		row := fmt.Sprintf("%s%-25s %-12s %-10d %-12s", prefix, dateStr, truncateRunes(d.Topic, 12), d.PostCount, mcpVis)
 
 		if i == m.digestCursor {
 			b.WriteString(selectedRowStyle.Width(m.width).Render(row) + "\n")
@@ -371,31 +556,233 @@ func (m *Model) renderDigestsView() string {
 		}
 	}
 
-	// Preview selected digest
+	// Preview selected digest - dynamically expands to fill remaining screen height
 	if len(m.digests) > 0 && m.digestCursor < len(m.digests) {
 		selected := m.digests[m.digestCursor]
-		b.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render(" ── Summary Preview: "+selected.Title+" ──") + "\n")
+		b.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render(" ── Summary Preview: "+selected.Title+" (Press [Enter] to read full digest) ──") + "\n")
 		lines := strings.Split(selected.SummaryMarkdown, "\n")
-		for j := 0; j < min(len(lines), 10); j++ {
+		previewCapacity := max(6, m.height-maxDigestList-14)
+		for j := 0; j < min(len(lines), previewCapacity); j++ {
 			b.WriteString("  " + lines[j] + "\n")
+		}
+		if len(lines) > previewCapacity {
+			b.WriteString(lipgloss.NewStyle().Foreground(subtleColor).Render(
+				fmt.Sprintf("  *... and %d more lines (Press [Enter] to read all)*", len(lines)-previewCapacity)) + "\n")
 		}
 	}
 
 	return b.String()
 }
 
+func (m *Model) renderFullDigestReader() string {
+	var b strings.Builder
+	if len(m.digests) == 0 || m.digestCursor >= len(m.digests) {
+		return "  No digest selected.\n"
+	}
+	selected := m.digests[m.digestCursor]
+
+	// Header line
+	headerInfo := fmt.Sprintf(" 📖 %s  •  %s  (%d posts)",
+		selected.Title,
+		selected.CreatedAt.Format("2006-01-02 15:04"),
+		selected.PostCount,
+	)
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(headerInfo) + "\n\n")
+
+	lines := strings.Split(selected.SummaryMarkdown, "\n")
+	pageSize := max(5, m.height-6)
+
+	maxOffset := max(0, len(lines)-pageSize)
+	if m.digestScrollOffset > maxOffset {
+		m.digestScrollOffset = maxOffset
+	}
+
+	start := m.digestScrollOffset
+	end := min(len(lines), start+pageSize)
+
+	for i := start; i < end; i++ {
+		line := lines[i]
+		if strings.HasPrefix(line, "# ") {
+			b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(line) + "\n")
+		} else if strings.HasPrefix(line, "## ") {
+			b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render(line) + "\n")
+		} else if strings.HasPrefix(line, "### ") {
+			b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render(line) + "\n")
+		} else {
+			b.WriteString(line + "\n")
+		}
+	}
+
+	return b.String()
+}
+
+func (m *Model) renderDigestMenuModal() string {
+	var b strings.Builder
+
+	selectedChTitle := "No channel selected"
+	var selectedChUsername string
+	if len(m.filteredChannels) > 0 && m.cursor < len(m.filteredChannels) {
+		ch := m.filteredChannels[m.cursor]
+		selectedChTitle = ch.Title
+		selectedChUsername = ch.Username
+	}
+
+	boxWidth := min(76, m.width-4)
+	if boxWidth < 45 {
+		boxWidth = 45
+	}
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2).
+		Width(boxWidth)
+
+	var content strings.Builder
+	titleLine := lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("📝 CREATE FEED DIGEST")
+	content.WriteString(titleLine + "\n")
+	content.WriteString(lipgloss.NewStyle().Foreground(subtleColor).Render("Generate an AI executive summary or extractive report from stored posts.") + "\n\n")
+
+	// Section 1: Target Scope
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("1. Target Scope:") + "\n")
+	scope0 := "[ ] All Tracked Channels (Global Feed)"
+	if m.digestMenuScope == 0 {
+		scope0 = activeTagStyle.Render("[•] All Tracked Channels (Global Feed)")
+	}
+	content.WriteString("   " + scope0 + "\n")
+
+	chDesc := selectedChTitle
+	if selectedChUsername != "" {
+		chDesc += " (@" + selectedChUsername + ")"
+	}
+	scope1 := "[ ] Individual Channel: " + chDesc
+	if m.digestMenuScope == 1 {
+		scope1 = activeTagStyle.Render("[•] Individual Channel: " + chDesc)
+	}
+	content.WriteString("   " + scope1 + "\n")
+
+	scope2 := "[ ] By Topic / Tag(s):"
+	if m.digestMenuScope == 2 {
+		scope2 = activeTagStyle.Render("[•] By Topic / Tag(s):")
+	}
+	content.WriteString("   " + scope2 + "\n")
+	if m.digestMenuScope == 2 {
+		content.WriteString("      " + m.digestTopicInput.View() + "\n")
+		trackedTags := m.getTrackedChannelTags()
+		if len(trackedTags) > 0 {
+			var tagPills []string
+			displayLimit := min(8, len(trackedTags))
+			for i := 0; i < displayLimit; i++ {
+				tagPills = append(tagPills, "#"+trackedTags[i])
+			}
+			tagsLine := "      Tags: " + strings.Join(tagPills, "  ")
+			if len(trackedTags) > displayLimit {
+				tagsLine += fmt.Sprintf(" (+%d more)", len(trackedTags)-displayLimit)
+			}
+			content.WriteString(lipgloss.NewStyle().Foreground(subtleColor).Render(tagsLine) + "\n")
+		}
+		content.WriteString("      " + lipgloss.NewStyle().Foreground(subtleColor).Render("Tip: combine tags with 'tag1 + tag2' or 'tag1 & tag2'") + "\n")
+	}
+	content.WriteString("\n")
+
+	// Section 2: Time Period
+	now := time.Now()
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("2. Time Period:") + "\n")
+
+	periods := []struct {
+		label string
+		desc  string
+	}{
+		{"All Unread Messages", "Only new unread posts since last sync watermark (marks as read)"},
+		{"Today (Past 24 Hours)", "Posts published in the last 24 hours (keeps unread markers)"},
+		{"Past 7 Days (Week)", "Posts published during the last 7 days"},
+		{"Past 30 Days (Month)", "Posts published during the last 30 days"},
+		{"Current Month (" + now.Format("January 2006") + ")", "Posts from the 1st of this month to today"},
+		{"Previous Month (" + now.AddDate(0, -1, 0).Format("January 2006") + ")", "Full calendar month of posts"},
+	}
+
+	for i, p := range periods {
+		mark := "[ ]"
+		if i == m.digestMenuPeriod {
+			mark = "[•]"
+		}
+		line := fmt.Sprintf("%s %s", mark, p.label)
+		desc := fmt.Sprintf("    %s", p.desc)
+		if i == m.digestMenuPeriod {
+			content.WriteString("   " + activeTagStyle.Render(line) + "\n")
+			content.WriteString("   " + lipgloss.NewStyle().Foreground(subtleColor).Render(desc) + "\n")
+		} else {
+			content.WriteString("   " + line + "\n")
+		}
+	}
+
+	content.WriteString("\n" + lipgloss.NewStyle().Foreground(subtleColor).Render("Controls: [Tab/←/→] Toggle Scope  •  [↑/↓] Change Period  •  [Enter] Generate  •  [Esc] Cancel"))
+
+	b.WriteString(borderStyle.Render(content.String()))
+	return b.String()
+}
+
 func (m *Model) renderHelpBar() string {
 	var keys []string
 
+	if m.editingPrompt {
+		keys = []string{
+			helpKey("[ctrl+s]") + " Save to DB",
+			helpKey("[ctrl+r]") + " Reset Default Template",
+			helpKey("[Esc]") + " Cancel",
+		}
+		return statusBarStyle.Width(m.width).Render(strings.Join(keys, "  "))
+	}
+
+	if m.readingFullDigest {
+		keys = []string{
+			helpKey("[↑/↓]") + " Scroll Line",
+			helpKey("[PgUp/PgDn/Space]") + " Page",
+			helpKey("[Home/End]") + " Top/Bottom",
+			helpKey("[Esc/Enter/q]") + " Back to List",
+		}
+		return statusBarStyle.Width(m.width).Render(strings.Join(keys, "  "))
+	}
+
+	if m.showingDigestMenu {
+		keys = []string{
+			helpKey("[Tab/←/→]") + " Target Scope",
+			helpKey("[↑/↓]") + " Select Period",
+			helpKey("[Enter]") + " Generate",
+			helpKey("[Esc]") + " Cancel",
+		}
+		return statusBarStyle.Width(m.width).Render(strings.Join(keys, "  "))
+	}
+
 	switch m.activeView {
 	case ViewChannels:
+		if m.showingChannelDetails {
+			if m.editingChannelTags {
+				keys = []string{
+					helpKey("[Enter]") + " Save Tags",
+					helpKey("[Esc]") + " Cancel",
+				}
+			} else {
+				keys = []string{
+					helpKey("[t]") + " Edit Tags",
+					helpKey("[Space]") + " Toggle Sync",
+					helpKey("[m]") + " Toggle MCP",
+					helpKey("[a]") + " Toggle Ads",
+					helpKey("[Esc]") + " Back to Channels",
+				}
+			}
+			return statusBarStyle.Width(m.width).Render(strings.Join(keys, "  "))
+		}
 		keys = []string{
+			helpKey("[Enter]") + " Details & Tags",
 			helpKey("[Space]") + " Track",
 			helpKey("[m]") + " LLM Access",
 			helpKey("[a]") + " Ad Filter",
+			helpKey("[g]") + " Digest Menu",
+			helpKey("[c]") + " Channel Digest",
+			helpKey("[s]") + " Sync",
 			helpKey("[/]") + " Search",
 			helpKey("[o]") + " Settings",
-			helpKey("[p]") + " Ad Rules",
 			helpKey("[d]") + " Digests",
 			helpKey("[r]") + " Refresh",
 			helpKey("[q]") + " Quit",
@@ -417,6 +804,8 @@ func (m *Model) renderHelpBar() string {
 	case ViewDigests:
 		keys = []string{
 			helpKey("[↑/↓]") + " Select Digest",
+			helpKey("[Enter]") + " Read Full",
+			helpKey("[g]") + " Create Digest",
 			helpKey("[Esc]") + " Back",
 		}
 	}

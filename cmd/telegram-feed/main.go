@@ -97,7 +97,7 @@ func main() {
 
 	switch subcommand {
 	case "tui":
-		if err := tui.Run(repo); err != nil {
+		if err := tui.Run(repo, feedSvc); err != nil {
 			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			os.Exit(1)
 		}

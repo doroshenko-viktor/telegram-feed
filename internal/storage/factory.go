@@ -93,5 +93,14 @@ func NewRepository(ctx context.Context, cfg config.StorageConfig) (domain.Reposi
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
-	return NewSQLRepository(db, driver), nil
+	repo := NewSQLRepository(db, driver)
+	seedDefaultSettings(ctx, repo)
+	return repo, nil
+}
+
+func seedDefaultSettings(ctx context.Context, repo domain.Repository) {
+	val, err := repo.GetSetting(ctx, domain.SettingKeyDigestPrompt, "")
+	if err == nil && strings.TrimSpace(val) == "" {
+		_ = repo.SetSetting(ctx, domain.SettingKeyDigestPrompt, domain.DefaultDigestPrompt)
+	}
 }

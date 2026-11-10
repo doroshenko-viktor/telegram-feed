@@ -75,19 +75,34 @@ func (g *GeminiProvider) HasAI() bool {
 	return true
 }
 
-// GenerateDigest generates a structured markdown digest from a slice of posts.
-func (g *GeminiProvider) GenerateDigest(ctx context.Context, topic string, posts []*domain.Post) (*domain.Digest, error) {
+// GenerateDigest generates a structured markdown digest from a slice of posts using the provided prompt template.
+func (g *GeminiProvider) GenerateDigest(ctx context.Context, topic string, posts []*domain.Post, channels []*domain.Channel, promptTemplate string) (*domain.Digest, error) {
 	if len(posts) == 0 {
 		return nil, fmt.Errorf("no posts available to summarize")
 	}
 
+	channelMap := make(map[int64]*domain.Channel)
+	for _, ch := range channels {
+		channelMap[ch.ID] = ch
+	}
+
+	prompt := strings.TrimSpace(promptTemplate)
+	if prompt == "" {
+		prompt = domain.DefaultDigestPrompt
+	}
+
+	// Interpolate topic placeholder if present
+	if strings.Contains(prompt, "{{topic}}") {
+		prompt = strings.ReplaceAll(prompt, "{{topic}}", topic)
+	} else if strings.Contains(prompt, "%s") {
+		prompt = fmt.Sprintf(prompt, topic)
+	} else {
+		prompt = fmt.Sprintf("Topic: %s\n\n%s", topic, prompt)
+	}
+
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("You are an expert technical digest editor. Create a concise, high-signal Telegram digest about [%s] from the following raw posts.\n", topic))
-	sb.WriteString("Requirements:\n")
-	sb.WriteString("1. Group into: 🔥 Executive Summary, 🚀 Releases & Tools, 💡 Deep Dives & Articles, 📌 Quick Notes.\n")
-	sb.WriteString("2. Omit any advertisements, spam, course sales, or low-value promos.\n")
-	sb.WriteString("3. Format in clean, readable Markdown.\n\n")
-	sb.WriteString("Raw Channel Posts (safely delimited):\n")
+	sb.WriteString(prompt)
+	sb.WriteString("\n\nRaw Channel Posts (safely delimited):\n")
 
 	earliest := posts[0].Date
 	latest := posts[0].Date
@@ -102,7 +117,17 @@ func (g *GeminiProvider) GenerateDigest(ctx context.Context, topic string, posts
 		}
 		channelIDMap[p.ChannelID] = true
 
-		sb.WriteString(fmt.Sprintf("<post id=\"%d\" channel=\"%d\" date=\"%s\">\n", p.MsgID, p.ChannelID, p.Date.Format(time.RFC3339)))
+		var chTitle, chUsername, postURL string
+		if ch, ok := channelMap[p.ChannelID]; ok {
+			chTitle = ch.Title
+			chUsername = ch.Username
+			if ch.Username != "" {
+				postURL = fmt.Sprintf("https://t.me/%s/%d", ch.Username, p.MsgID)
+			}
+		}
+
+		sb.WriteString(fmt.Sprintf("<post id=\"%d\" channel_id=\"%d\" channel_title=\"%s\" channel_username=\"%s\" url=\"%s\" date=\"%s\">\n",
+			p.MsgID, p.ChannelID, chTitle, chUsername, postURL, p.Date.Format(time.RFC3339)))
 		sb.WriteString(p.Text)
 		sb.WriteString("\n</post>\n\n")
 	}

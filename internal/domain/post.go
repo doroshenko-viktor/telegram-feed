@@ -19,11 +19,13 @@ type Post struct {
 
 // PostFilter specifies query parameters for retrieving messages from the database.
 type PostFilter struct {
-	ChannelIDs []int64
-	Topic      string
-	Since      time.Time
-	Limit      int
-	FilterAds  bool // If true, only posts with IsAd == false are returned
-	UnreadOnly bool
-	MCPOnly    bool // If true, only returns posts from channels where mcp_allowed == true
+	ChannelIDs  []int64
+	Topic       string
+	Since       time.Time
+	Until       time.Time
+	Limit       int
+	FilterAds   bool // If true, only posts with IsAd == false are returned
+	UnreadOnly  bool
+	MCPOnly     bool // If true, only returns posts from channels where mcp_allowed == true
+	TrackedOnly bool // If true, only returns posts from channels where is_tracked == true
 }

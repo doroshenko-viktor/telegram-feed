@@ -20,7 +20,7 @@ func (n *NoOpProvider) HasAI() bool {
 	return false
 }
 
-func (n *NoOpProvider) GenerateDigest(ctx context.Context, topic string, posts []*domain.Post) (*domain.Digest, error) {
+func (n *NoOpProvider) GenerateDigest(ctx context.Context, topic string, posts []*domain.Post, channels []*domain.Channel, promptTemplate string) (*domain.Digest, error) {
 	return nil, fmt.Errorf("local AI is not configured (GEMINI_API_KEY is not set). Use conversational MCP with Claude/Cursor/Antigravity, or set GEMINI_API_KEY to enable autonomous local digests")
 }
 

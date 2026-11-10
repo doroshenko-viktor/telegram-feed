@@ -28,19 +28,56 @@ func RunMigrations(ctx context.Context, db *sql.DB, driver string) error {
 		return fmt.Errorf("reading embedded migration %s: %w", filename, err)
 	}
 
-	// Split by semicolon and strip comment lines
-	statements := strings.Split(string(content), ";")
+	// Split statements by semicolon while respecting string literals
+	statements := splitSQLStatements(string(content))
 	for _, stmt := range statements {
-		clean := cleanSQL(stmt)
-		if clean == "" {
-			continue
-		}
-		if _, err := db.ExecContext(ctx, clean); err != nil {
-			return fmt.Errorf("executing migration statement [%s]: %w", clean, err)
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("executing migration statement [%s]: %w", stmt, err)
 		}
 	}
 
 	return nil
+}
+
+func splitSQLStatements(content string) []string {
+	var statements []string
+	var current strings.Builder
+	inString := false
+
+	runes := []rune(content)
+	n := len(runes)
+
+	for i := 0; i < n; i++ {
+		r := runes[i]
+		if r == '\'' {
+			// Handle escaped quote ''
+			if inString && i+1 < n && runes[i+1] == '\'' {
+				current.WriteRune(r)
+				current.WriteRune('\'')
+				i++
+				continue
+			}
+			inString = !inString
+		}
+
+		if r == ';' && !inString {
+			stmt := cleanSQL(current.String())
+			if stmt != "" {
+				statements = append(statements, stmt)
+			}
+			current.Reset()
+			continue
+		}
+
+		current.WriteRune(r)
+	}
+
+	tail := cleanSQL(current.String())
+	if tail != "" {
+		statements = append(statements, tail)
+	}
+
+	return statements
 }
 
 func cleanSQL(stmt string) string {

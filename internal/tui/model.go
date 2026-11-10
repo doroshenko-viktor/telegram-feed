@@ -3,14 +3,17 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"telegram_feed_summarizer/internal/domain"
 	"telegram_feed_summarizer/internal/llm/gemini"
+	"telegram_feed_summarizer/internal/service"
 )
 
 type ViewMode int
@@ -36,6 +39,7 @@ type SettingItem struct {
 // Model represents the Bubble Tea TUI state.
 type Model struct {
 	repo             domain.Repository
+	feedSvc          *service.FeedService
 	channels         []*domain.Channel
 	filteredChannels []*domain.Channel
 	cursor           int
@@ -59,6 +63,9 @@ type Model struct {
 	cronSchedule       string
 	filterAdsGlobal    string
 	minPostLength      string
+	digestPrompt       string
+	editingPrompt      bool
+	promptTextArea     textarea.Model
 
 	// Dynamic Ad Patterns
 	adPatterns    []*domain.AdPattern
@@ -70,6 +77,32 @@ type Model struct {
 	digests      []*domain.Digest
 	digestCursor int
 
+	// Local Message Cache Stats
+	totalPosts  int
+	unreadPosts int
+
+	// Background Task Execution
+	isBusy     bool
+	busyAction string
+
+	// Full-Height Scrolling
+	scrollOffset int
+
+	// Channel Details & Tag Editor
+	showingChannelDetails bool
+	editingChannelTags    bool
+	channelTagsInput      textinput.Model
+
+	// Digest Creation Menu Dialog
+	showingDigestMenu bool
+	digestMenuScope   int // 0 = All Tracked Channels, 1 = Selected Channel, 2 = By Topic / Tags
+	digestMenuPeriod  int // 0 = Unread, 1 = Today, 2 = Past 7 Days, 3 = Past 30 Days, 4 = Current Month, 5 = Previous Month
+	digestTopicInput  textinput.Model
+
+	// Full Digest Reader Mode
+	readingFullDigest  bool
+	digestScrollOffset int
+
 	// Status
 	statusMsg  string
 	statusTime time.Time
@@ -78,7 +111,7 @@ type Model struct {
 }
 
 // NewModel creates an initialized TUI model.
-func NewModel(repo domain.Repository) *Model {
+func NewModel(repo domain.Repository, feedSvc *service.FeedService) *Model {
 	ti := textinput.New()
 	ti.Placeholder = "type to filter channels by title, username or topic..."
 	ti.Prompt = "/ "
@@ -90,14 +123,31 @@ func NewModel(repo domain.Repository) *Model {
 	si := textinput.New()
 	si.Prompt = "Enter value: "
 
+	ta := textarea.New()
+	ta.Placeholder = "Enter custom system prompt for AI digest generation..."
+	ta.ShowLineNumbers = true
+	ta.CharLimit = 0
+
+	tiTags := textinput.New()
+	tiTags.Placeholder = "e.g. go, programming, concurrency, ai..."
+	tiTags.Prompt = "Tags: "
+
+	tiTopic := textinput.New()
+	tiTopic.Placeholder = "e.g. go + kubernetes, programming, ai..."
+	tiTopic.Prompt = "Tags: "
+
 	m := &Model{
-		repo:         repo,
-		activeView:   ViewChannels,
-		filterInput:  ti,
-		newPatternIn: np,
-		settingInput: si,
-		width:        100,
-		height:       30,
+		repo:             repo,
+		feedSvc:          feedSvc,
+		activeView:       ViewChannels,
+		filterInput:      ti,
+		newPatternIn:     np,
+		settingInput:     si,
+		promptTextArea:   ta,
+		channelTagsInput: tiTags,
+		digestTopicInput: tiTopic,
+		width:            100,
+		height:           30,
 	}
 
 	m.reloadChannels()
@@ -118,6 +168,12 @@ func (m *Model) reloadChannels() {
 	if err == nil {
 		m.channels = channels
 		m.applyFilter()
+	}
+
+	total, unread, err := m.repo.GetPostStats(ctx)
+	if err == nil {
+		m.totalPosts = total
+		m.unreadPosts = unread
 	}
 }
 
@@ -141,6 +197,7 @@ func (m *Model) reloadSettingsAndPatterns() {
 	m.cronSchedule, _ = m.repo.GetSetting(ctx, domain.SettingKeyCronSchedule, "0 9 * * *")
 	m.filterAdsGlobal, _ = m.repo.GetSetting(ctx, domain.SettingKeyFilterAds, "true")
 	m.minPostLength, _ = m.repo.GetSetting(ctx, domain.SettingKeyMinPostLength, "20")
+	m.digestPrompt, _ = m.repo.GetSetting(ctx, domain.SettingKeyDigestPrompt, domain.DefaultDigestPrompt)
 }
 
 func (m *Model) getSettingItems() []SettingItem {
@@ -159,6 +216,12 @@ func (m *Model) getSettingItems() []SettingItem {
 	botChatDisplay := m.botChatID
 	if botChatDisplay == "" {
 		botChatDisplay = "Not set"
+	}
+
+	promptDisplay := "Default template"
+	if strings.TrimSpace(m.digestPrompt) != "" && strings.TrimSpace(m.digestPrompt) != strings.TrimSpace(domain.DefaultDigestPrompt) {
+		lines := strings.Count(m.digestPrompt, "\n") + 1
+		promptDisplay = fmt.Sprintf("Customized (%d lines)", lines)
 	}
 
 	return []SettingItem{
@@ -200,6 +263,12 @@ func (m *Model) getSettingItems() []SettingItem {
 			IsCycle:     true,
 			CycleOpts:   []string{"gemini-3.8-flash", "gemini-3.8-pro", "gemini-3.0-flash"},
 			Value:       m.geminiModel,
+		},
+		{
+			Key:         domain.SettingKeyDigestPrompt,
+			Label:       "AI Digest Prompt Template",
+			Description: "System prompt for AI summarization (Enter to edit full prompt)",
+			Value:       promptDisplay,
 		},
 		{
 			Key:         domain.SettingKeyFilterAds,
@@ -254,14 +323,187 @@ func (m *Model) setStatus(msg string) {
 	m.statusTime = time.Now()
 }
 
+type syncFinishedMsg struct {
+	count int
+	err   error
+}
+
+type digestFinishedMsg struct {
+	digest *domain.Digest
+	err    error
+}
+
+func syncPostsCmd(feedSvc *service.FeedService) tea.Cmd {
+	return func() tea.Msg {
+		if feedSvc == nil {
+			return syncFinishedMsg{err: fmt.Errorf("feed service is not configured")}
+		}
+		count, err := feedSvc.SyncTrackedPosts(context.Background())
+		return syncFinishedMsg{count: count, err: err}
+	}
+}
+
+func generateDigestCmd(feedSvc *service.FeedService, topic string) tea.Cmd {
+	return func() tea.Msg {
+		if feedSvc == nil {
+			return digestFinishedMsg{err: fmt.Errorf("feed service is not configured")}
+		}
+		digest, err := feedSvc.GenerateDigest(context.Background(), topic)
+		return digestFinishedMsg{digest: digest, err: err}
+	}
+}
+
+func generateDigestWithOptionsCmd(feedSvc *service.FeedService, opts service.DigestOptions) tea.Cmd {
+	return func() tea.Msg {
+		if feedSvc == nil {
+			return digestFinishedMsg{err: fmt.Errorf("feed service is not configured")}
+		}
+		digest, err := feedSvc.GenerateDigestWithOptions(context.Background(), opts)
+		return digestFinishedMsg{digest: digest, err: err}
+	}
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case syncFinishedMsg:
+		m.isBusy = false
+		m.busyAction = ""
+		if msg.err != nil {
+			m.setStatus(fmt.Sprintf("❌ Sync failed: %v", msg.err))
+		} else {
+			m.setStatus(fmt.Sprintf("✓ Synced %d new posts into local database", msg.count))
+			m.reloadChannels()
+		}
+		return m, nil
+
+	case digestFinishedMsg:
+		m.isBusy = false
+		m.busyAction = ""
+		if msg.err != nil {
+			m.setStatus(fmt.Sprintf("❌ Digest failed: %v", msg.err))
+		} else {
+			m.setStatus(fmt.Sprintf("✓ %s created! (%d posts summarized)", msg.digest.Title, msg.digest.PostCount))
+			m.reloadDigests()
+			m.reloadChannels()
+			m.activeView = ViewDigests
+			m.digestCursor = 0
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.promptTextArea.SetWidth(max(40, m.width-6))
+		m.promptTextArea.SetHeight(max(10, m.height-10))
 		return m, nil
 
 	case tea.KeyMsg:
+		// When inside Digest Menu dialog
+		if m.showingDigestMenu {
+			switch msg.String() {
+			case "esc":
+				m.showingDigestMenu = false
+				m.digestTopicInput.Blur()
+				return m, nil
+			case "tab", "left", "right":
+				m.digestMenuScope = (m.digestMenuScope + 1) % 3
+				if m.digestMenuScope == 2 {
+					m.digestTopicInput.Focus()
+				} else {
+					m.digestTopicInput.Blur()
+				}
+				return m, nil
+			case "up", "k":
+				if m.digestMenuScope == 2 && msg.String() == "k" {
+					var cmd tea.Cmd
+					m.digestTopicInput, cmd = m.digestTopicInput.Update(msg)
+					return m, cmd
+				}
+				if m.digestMenuPeriod > 0 {
+					m.digestMenuPeriod--
+				}
+				return m, nil
+			case "down", "j":
+				if m.digestMenuScope == 2 && msg.String() == "j" {
+					var cmd tea.Cmd
+					m.digestTopicInput, cmd = m.digestTopicInput.Update(msg)
+					return m, cmd
+				}
+				if m.digestMenuPeriod < 5 {
+					m.digestMenuPeriod++
+				}
+				return m, nil
+			case "enter":
+				opts := service.DigestOptions{}
+				targetDesc := "All Tracked Channels"
+				if m.digestMenuScope == 1 && len(m.filteredChannels) > 0 && m.cursor < len(m.filteredChannels) {
+					currentCh := m.filteredChannels[m.cursor]
+					opts.ChannelID = currentCh.ID
+					targetDesc = currentCh.Title
+				} else if m.digestMenuScope == 2 {
+					topic := strings.TrimSpace(m.digestTopicInput.Value())
+					if topic == "" {
+						m.setStatus("⚠️ Please enter one or more tags (e.g. 'go + k8s' or 'ai')")
+						return m, nil
+					}
+					opts.Topic = topic
+					targetDesc = fmt.Sprintf("Topic: %s", topic)
+				}
+
+				m.showingDigestMenu = false
+				m.digestTopicInput.Blur()
+				if m.isBusy {
+					m.setStatus("⚠️ Busy: " + m.busyAction)
+					return m, nil
+				}
+
+				var periodDesc string
+				switch m.digestMenuPeriod {
+				case 0:
+					opts.TimeRange = service.TimeRangeUnread
+					periodDesc = "Unread"
+				case 1:
+					opts.TimeRange = service.TimeRangeToday
+					periodDesc = "Today (24h)"
+				case 2:
+					opts.TimeRange = service.TimeRangePast7Days
+					periodDesc = "Past 7 Days"
+				case 3:
+					opts.TimeRange = service.TimeRangePast30Days
+					periodDesc = "Past 30 Days"
+				case 4:
+					opts.TimeRange = service.TimeRangeCurrentMonth
+					periodDesc = time.Now().Format("January 2006")
+				case 5:
+					opts.TimeRange = service.TimeRangePrevMonth
+					periodDesc = time.Now().AddDate(0, -1, 0).Format("January 2006")
+				}
+
+				m.isBusy = true
+				m.busyAction = fmt.Sprintf("Generating digest for %s (%s)...", targetDesc, periodDesc)
+				m.setStatus(fmt.Sprintf("⏳ Generating digest for [%s] (%s)...", targetDesc, periodDesc))
+				return m, generateDigestWithOptionsCmd(m.feedSvc, opts)
+
+			default:
+				if m.digestMenuScope == 2 {
+					var cmd tea.Cmd
+					m.digestTopicInput, cmd = m.digestTopicInput.Update(msg)
+					return m, cmd
+				}
+				if msg.String() == "q" {
+					m.showingDigestMenu = false
+					m.digestTopicInput.Blur()
+					return m, nil
+				}
+				return m, nil
+			}
+		}
+
+		// When inside Channel Details view
+		if m.showingChannelDetails {
+			return m.updateChannelDetails(msg)
+		}
+
 		// When typing inside filter input
 		if m.filtering {
 			switch msg.String() {
@@ -308,11 +550,47 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// When editing AI digest prompt template
+		if m.editingPrompt {
+			switch msg.String() {
+			case "ctrl+s":
+				val := m.promptTextArea.Value()
+				ctx := context.Background()
+				_ = m.repo.SetSetting(ctx, domain.SettingKeyDigestPrompt, val)
+				m.digestPrompt = val
+				m.editingPrompt = false
+				m.promptTextArea.Blur()
+				m.reloadSettingsAndPatterns()
+				m.setStatus("✓ Digest prompt template saved to database")
+				return m, nil
+			case "ctrl+r":
+				m.promptTextArea.SetValue(domain.DefaultDigestPrompt)
+				m.setStatus("Reset prompt to default template (Press ctrl+s to save)")
+				return m, nil
+			case "esc":
+				m.editingPrompt = false
+				m.promptTextArea.Blur()
+				m.setStatus("Prompt editing cancelled")
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.promptTextArea, cmd = m.promptTextArea.Update(msg)
+				return m, cmd
+			}
+		}
+
 		// Global navigation keys
 		switch msg.String() {
-		case "ctrl+c", "q":
-			if m.editingSetting || m.addingPattern || m.filtering {
+		case "ctrl+c":
+			return m, tea.Quit
+
+		case "q":
+			if m.editingSetting || m.editingPrompt || m.addingPattern || m.filtering || m.showingDigestMenu || m.showingChannelDetails {
 				break
+			}
+			if m.readingFullDigest {
+				m.readingFullDigest = false
+				return m, nil
 			}
 			if m.activeView != ViewChannels {
 				m.activeView = ViewChannels
@@ -321,7 +599,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "tab":
-			if m.editingSetting || m.addingPattern || m.filtering {
+			if m.editingSetting || m.editingPrompt || m.addingPattern || m.filtering || m.showingDigestMenu || m.readingFullDigest || m.showingChannelDetails {
 				break
 			}
 			switch m.activeView {
@@ -337,7 +615,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "o":
-			if m.editingSetting || m.addingPattern || m.filtering {
+			if m.editingSetting || m.editingPrompt || m.addingPattern || m.filtering || m.showingDigestMenu || m.readingFullDigest || m.showingChannelDetails {
 				break
 			}
 			if m.activeView == ViewSettings {
@@ -348,7 +626,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "p":
-			if m.editingSetting || m.addingPattern || m.filtering {
+			if m.editingSetting || m.editingPrompt || m.addingPattern || m.filtering || m.showingDigestMenu || m.readingFullDigest || m.showingChannelDetails {
 				break
 			}
 			if m.activeView == ViewPatterns {
@@ -359,7 +637,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "d":
-			if m.editingSetting || m.addingPattern || m.filtering {
+			if m.editingSetting || m.editingPrompt || m.addingPattern || m.filtering || m.showingDigestMenu || m.readingFullDigest || m.showingChannelDetails {
 				break
 			}
 			if m.activeView == ViewDigests {
@@ -370,7 +648,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "r":
-			if m.editingSetting || m.addingPattern || m.filtering {
+			if m.editingSetting || m.editingPrompt || m.addingPattern || m.filtering || m.showingDigestMenu || m.readingFullDigest || m.showingChannelDetails {
 				break
 			}
 			m.reloadChannels()
@@ -441,9 +719,143 @@ func (m *Model) updateChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		currentCh.FilterAds = newFilter
 		_ = m.repo.SetFilterAds(ctx, []int64{currentCh.ID}, newFilter)
 		m.setStatus(fmt.Sprintf("Ad filter for [%s] set to %v", currentCh.Title, newFilter))
+
+	case "s": // Sync posts from Telegram cloud
+		if m.isBusy {
+			m.setStatus("⚠️ Busy: " + m.busyAction)
+			return m, nil
+		}
+		m.isBusy = true
+		m.busyAction = "Syncing messages from Telegram..."
+		m.setStatus("⏳ Syncing new posts from Telegram into local database...")
+		return m, syncPostsCmd(m.feedSvc)
+
+	case "g": // Open Digest Creation Menu (default: all channels)
+		m.showingDigestMenu = true
+		m.digestMenuScope = 0
+		m.digestMenuPeriod = 0
+		return m, nil
+
+	case "c": // Open Digest Creation Menu targeting current channel
+		m.showingDigestMenu = true
+		m.digestMenuScope = 1
+		m.digestMenuPeriod = 0
+		return m, nil
+
+	case "enter", "i": // Open Channel Details view
+		m.showingChannelDetails = true
+		m.editingChannelTags = false
+		return m, nil
 	}
 
 	return m, nil
+}
+
+func (m *Model) updateChannelDetails(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.filteredChannels) == 0 || m.cursor >= len(m.filteredChannels) {
+		m.showingChannelDetails = false
+		return m, nil
+	}
+
+	currentCh := m.filteredChannels[m.cursor]
+	ctx := context.Background()
+
+	if m.editingChannelTags {
+		switch msg.String() {
+		case "enter":
+			val := m.channelTagsInput.Value()
+			parts := strings.Split(val, ",")
+			var newTopics []string
+			seen := make(map[string]bool)
+			for _, p := range parts {
+				t := strings.TrimSpace(p)
+				t = strings.TrimPrefix(t, "#")
+				if t != "" && !seen[strings.ToLower(t)] {
+					seen[strings.ToLower(t)] = true
+					newTopics = append(newTopics, t)
+				}
+			}
+			currentCh.Topics = newTopics
+			_ = m.repo.UpdateChannelTopics(ctx, currentCh.ID, newTopics)
+			m.editingChannelTags = false
+			m.channelTagsInput.Blur()
+			m.setStatus(fmt.Sprintf("✓ Saved %d tags for [%s]", len(newTopics), currentCh.Title))
+			return m, nil
+
+		case "esc":
+			m.editingChannelTags = false
+			m.channelTagsInput.Blur()
+			return m, nil
+
+		default:
+			var cmd tea.Cmd
+			m.channelTagsInput, cmd = m.channelTagsInput.Update(msg)
+			return m, cmd
+		}
+	}
+
+	switch msg.String() {
+	case "t", "e":
+		m.editingChannelTags = true
+		m.channelTagsInput.SetValue(strings.Join(currentCh.Topics, ", "))
+		m.channelTagsInput.Focus()
+		return m, nil
+
+	case " ": // Toggle tracking
+		newTracked := !currentCh.IsTracked
+		currentCh.IsTracked = newTracked
+		_ = m.repo.SetTracking(ctx, []int64{currentCh.ID}, newTracked)
+		m.setStatus(fmt.Sprintf("Sync tracking for [%s] set to %v", currentCh.Title, newTracked))
+
+	case "m": // Toggle MCP
+		newAllowed := !currentCh.MCPAllowed
+		currentCh.MCPAllowed = newAllowed
+		_ = m.repo.SetMCPAllowed(ctx, []int64{currentCh.ID}, newAllowed)
+		if newAllowed {
+			m.setStatus(fmt.Sprintf("Zero-Trust Gateway: [%s] is now VISIBLE to third-party LLMs over MCP", currentCh.Title))
+		} else {
+			m.setStatus(fmt.Sprintf("Zero-Trust Gateway: [%s] is now QUARANTINED from MCP", currentCh.Title))
+		}
+
+	case "a": // Toggle Ads
+		newFilter := !currentCh.FilterAds
+		currentCh.FilterAds = newFilter
+		_ = m.repo.SetFilterAds(ctx, []int64{currentCh.ID}, newFilter)
+		m.setStatus(fmt.Sprintf("Ad filter for [%s] set to %v", currentCh.Title, newFilter))
+
+	case "g":
+		m.showingChannelDetails = false
+		m.showingDigestMenu = true
+		m.digestMenuScope = 0
+		m.digestMenuPeriod = 0
+
+	case "c":
+		m.showingChannelDetails = false
+		m.showingDigestMenu = true
+		m.digestMenuScope = 1
+		m.digestMenuPeriod = 0
+
+	case "esc", "q", "enter":
+		m.showingChannelDetails = false
+	}
+
+	return m, nil
+}
+
+func (m *Model) getTrackedChannelTags() []string {
+	seen := make(map[string]bool)
+	var tags []string
+	for _, ch := range m.channels {
+		for _, t := range ch.Topics {
+			trimmed := strings.ToLower(strings.TrimSpace(t))
+			if trimmed != "" && !seen[trimmed] {
+				seen[trimmed] = true
+				tags = append(tags, trimmed)
+			}
+		}
+	}
+	sort.Strings(tags)
+	return tags
 }
 
 func (m *Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -534,6 +946,18 @@ func (m *Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter": // Open text edit
 		item := items[m.settingsCursor]
+		if item.Key == domain.SettingKeyDigestPrompt {
+			m.editingPrompt = true
+			curVal := m.digestPrompt
+			if strings.TrimSpace(curVal) == "" {
+				curVal = domain.DefaultDigestPrompt
+			}
+			m.promptTextArea.SetWidth(max(40, m.width-6))
+			m.promptTextArea.SetHeight(max(10, m.height-10))
+			m.promptTextArea.SetValue(curVal)
+			m.promptTextArea.Focus()
+			return m, nil
+		}
 		if !item.IsToggle && !item.IsCycle {
 			m.editingSetting = true
 			m.settingInput.Prompt = fmt.Sprintf("Edit %s: ", item.Label)
@@ -600,6 +1024,38 @@ func (m *Model) updatePatterns(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateDigests(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.readingFullDigest {
+		if len(m.digests) == 0 || m.digestCursor >= len(m.digests) {
+			m.readingFullDigest = false
+			return m, nil
+		}
+		selected := m.digests[m.digestCursor]
+		lines := strings.Split(selected.SummaryMarkdown, "\n")
+		pageSize := max(5, m.height-6)
+
+		switch msg.String() {
+		case "up", "k":
+			if m.digestScrollOffset > 0 {
+				m.digestScrollOffset--
+			}
+		case "down", "j":
+			if m.digestScrollOffset < max(0, len(lines)-pageSize) {
+				m.digestScrollOffset++
+			}
+		case "pgup", "b", "ctrl+u":
+			m.digestScrollOffset = max(0, m.digestScrollOffset-pageSize)
+		case "pgdown", "f", "ctrl+d", " ":
+			m.digestScrollOffset = min(max(0, len(lines)-pageSize), m.digestScrollOffset+pageSize)
+		case "home":
+			m.digestScrollOffset = 0
+		case "end":
+			m.digestScrollOffset = max(0, len(lines)-pageSize)
+		case "esc", "q", "enter":
+			m.readingFullDigest = false
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		if m.digestCursor > 0 {
@@ -609,6 +1065,17 @@ func (m *Model) updateDigests(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.digestCursor < len(m.digests)-1 {
 			m.digestCursor++
 		}
+	case "enter", " ": // Open Full Digest Reader
+		if len(m.digests) > 0 && m.digestCursor < len(m.digests) {
+			m.readingFullDigest = true
+			m.digestScrollOffset = 0
+		}
+		return m, nil
+	case "g": // Open Digest Creation Menu
+		m.showingDigestMenu = true
+		m.digestMenuScope = 0
+		m.digestMenuPeriod = 0
+		return m, nil
 	case "esc":
 		m.activeView = ViewChannels
 	}

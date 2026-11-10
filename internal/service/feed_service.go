@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"telegram_feed_summarizer/internal/config"
 	"telegram_feed_summarizer/internal/domain"
 	"telegram_feed_summarizer/internal/llm"
+	"telegram_feed_summarizer/internal/llm/gemini"
 	"telegram_feed_summarizer/internal/pipeline"
 	"telegram_feed_summarizer/internal/telegram"
 )
@@ -89,7 +91,7 @@ func (s *FeedService) SyncTrackedPosts(ctx context.Context) (int, error) {
 		// Pacing delay to avoid Telegram flood limits
 		time.Sleep(150 * time.Millisecond)
 
-		posts, maxMsgID, err := s.tgClient.FetchChannelPosts(ctx, ch, ch.LastSyncMsgID, 100)
+		posts, maxMsgID, err := s.tgClient.FetchChannelPosts(ctx, ch, ch.LastSyncMsgID, 1000)
 		if err != nil {
 			fmt.Printf("⚠️ Warning fetching channel %s (%d): %v\n", ch.Title, ch.ID, err)
 			continue
@@ -130,34 +132,155 @@ func (s *FeedService) SyncTrackedPosts(ctx context.Context) (int, error) {
 	return totalNewPosts, nil
 }
 
-// GenerateDigest generates an AI digest for the specified topic and delivers it if a bot is configured.
+// DigestTimeRange specifies the temporal scope for digest aggregation.
+type DigestTimeRange string
+
+const (
+	TimeRangeUnread       DigestTimeRange = "unread"
+	TimeRangeToday        DigestTimeRange = "today"
+	TimeRangePast7Days    DigestTimeRange = "week"
+	TimeRangePast30Days   DigestTimeRange = "month"
+	TimeRangeCurrentMonth DigestTimeRange = "current_month"
+	TimeRangePrevMonth    DigestTimeRange = "prev_month"
+)
+
+// DigestOptions specifies channel scope and temporal parameters for creating a digest.
+type DigestOptions struct {
+	ChannelID int64           // 0 for all tracked channels, or specific channel ID
+	Topic     string          // Optional topic tag (default "all")
+	TimeRange DigestTimeRange // "unread", "today", "week", "month", "current_month", "prev_month"
+	MaxPosts  int             // Cap on posts to analyze (default 500)
+}
+
+// GenerateDigest generates an AI or extractive digest for the specified topic and delivers it if a bot is configured.
 func (s *FeedService) GenerateDigest(ctx context.Context, topic string) (*domain.Digest, error) {
-	if s.llmProv == nil || !s.llmProv.HasAI() {
-		return nil, fmt.Errorf("local AI is disabled (GEMINI_API_KEY is not set). Digests can be queried on demand via MCP in your LLM chat")
-	}
-
-	if topic == "" {
-		topic = "all"
-	}
-
-	// Fetch unread posts, filtering out ads
-	posts, err := s.repo.GetPosts(ctx, domain.PostFilter{
-		Topic:      topic,
-		FilterAds:  true,
-		UnreadOnly: true,
-		Limit:      100,
+	return s.GenerateDigestWithOptions(ctx, DigestOptions{
+		Topic:     topic,
+		TimeRange: TimeRangeUnread,
 	})
+}
+
+// GenerateDigestWithOptions creates a digest for an individual channel or all channels over a chosen time period.
+func (s *FeedService) GenerateDigestWithOptions(ctx context.Context, opts DigestOptions) (*domain.Digest, error) {
+	now := time.Now()
+	if opts.TimeRange == "" {
+		opts.TimeRange = TimeRangeUnread
+	}
+	if opts.MaxPosts <= 0 {
+		opts.MaxPosts = 500
+	}
+
+	filter := domain.PostFilter{
+		FilterAds: true,
+		Limit:     opts.MaxPosts,
+	}
+
+	var (
+		targetName string
+		topic      string
+	)
+
+	if opts.ChannelID > 0 {
+		ch, err := s.repo.GetChannel(ctx, opts.ChannelID)
+		if err != nil {
+			return nil, fmt.Errorf("getting channel %d: %w", opts.ChannelID, err)
+		}
+		targetName = ch.Title
+		topic = ch.Title
+		filter.ChannelIDs = []int64{opts.ChannelID}
+	} else if opts.Topic != "" && opts.Topic != "all" {
+		targetName = fmt.Sprintf("Topic: %s", opts.Topic)
+		topic = opts.Topic
+		filter.TrackedOnly = true
+		filter.Topic = opts.Topic
+	} else {
+		targetName = "All Tracked Channels"
+		topic = "all"
+		filter.TrackedOnly = true
+		filter.Topic = "all"
+	}
+
+	var rangeLabel string
+	switch opts.TimeRange {
+	case TimeRangeToday:
+		filter.Since = now.Add(-24 * time.Hour)
+		filter.Until = now
+		rangeLabel = "Today (24h)"
+	case TimeRangePast7Days:
+		filter.Since = now.Add(-7 * 24 * time.Hour)
+		filter.Until = now
+		rangeLabel = "Past 7 Days"
+	case TimeRangePast30Days:
+		filter.Since = now.Add(-30 * 24 * time.Hour)
+		filter.Until = now
+		rangeLabel = "Past 30 Days"
+	case TimeRangeCurrentMonth:
+		filter.Since = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		filter.Until = now
+		rangeLabel = now.Format("January 2006")
+	case TimeRangePrevMonth:
+		prevMonth := now.AddDate(0, -1, 0)
+		filter.Since = time.Date(prevMonth.Year(), prevMonth.Month(), 1, 0, 0, 0, 0, now.Location())
+		filter.Until = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Add(-time.Second)
+		rangeLabel = prevMonth.Format("January 2006")
+	default: // TimeRangeUnread
+		filter.UnreadOnly = true
+		rangeLabel = "Unread"
+	}
+
+	posts, err := s.repo.GetPosts(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("fetching posts for digest: %w", err)
 	}
 
-	if len(posts) == 0 {
-		return nil, fmt.Errorf("no unread posts found for topic '%s'", topic)
+	// If unread was selected and no local posts found, attempt a delta sync from Telegram
+	if len(posts) == 0 && opts.TimeRange == TimeRangeUnread && s.tgClient != nil && s.tgClient.IsConfigured() {
+		_, _ = s.SyncTrackedPosts(ctx)
+		posts, err = s.repo.GetPosts(ctx, filter)
+		if err != nil {
+			return nil, fmt.Errorf("fetching posts after sync: %w", err)
+		}
 	}
 
-	digest, err := s.llmProv.GenerateDigest(ctx, topic, posts)
-	if err != nil {
-		return nil, fmt.Errorf("generating digest with LLM: %w", err)
+	if len(posts) == 0 {
+		return nil, fmt.Errorf("no posts found for '%s' in period '%s'", targetName, rangeLabel)
+	}
+
+	// Dynamic AI key detection (in case user updated Gemini key in TUI settings)
+	if s.llmProv == nil || !s.llmProv.HasAI() {
+		apiKey, _ := s.repo.GetSetting(ctx, domain.SettingKeyGeminiAPIKey, "")
+		if apiKey != "" {
+			model, _ := s.repo.GetSetting(ctx, domain.SettingKeyGeminiModel, "gemini-3.8-flash")
+			if prov, err := gemini.NewGeminiProvider(ctx, config.GeminiConfig{APIKey: apiKey, Model: model}); err == nil {
+				s.llmProv = prov
+			}
+		}
+	}
+
+	title := fmt.Sprintf("%s - %s", targetName, rangeLabel)
+	channels, _ := s.repo.ListChannels(ctx, false)
+
+	// Load configurable digest prompt from DB (or fallback to default)
+	promptTemplate, _ := s.repo.GetSetting(ctx, domain.SettingKeyDigestPrompt, domain.DefaultDigestPrompt)
+	if strings.TrimSpace(promptTemplate) == "" {
+		promptTemplate = domain.DefaultDigestPrompt
+	}
+
+	var digest *domain.Digest
+	if s.llmProv != nil && s.llmProv.HasAI() {
+		d, err := s.llmProv.GenerateDigest(ctx, topic, posts, channels, promptTemplate)
+		if err != nil {
+			return nil, fmt.Errorf("generating digest with LLM: %w", err)
+		}
+		d.Title = title
+		digest = d
+	} else {
+		// Fallback to high-signal extractive digest
+		d, err := pipeline.GenerateExtractiveDigestWithTitle(title, topic, posts, channels)
+		if err != nil {
+			return nil, fmt.Errorf("generating extractive digest: %w", err)
+		}
+		digest = d
 	}
 
 	// Persist digest into database
@@ -165,11 +288,11 @@ func (s *FeedService) GenerateDigest(ctx context.Context, topic string) (*domain
 		return nil, fmt.Errorf("saving digest: %w", err)
 	}
 
-	// Optional: Deliver via dedicated Telegram Bot if enabled
-	botEnabled, _ := s.repo.GetSetting(ctx, "delivery_bot_enabled", "false")
+	// Deliver via dedicated Telegram Bot if enabled
+	botEnabled, _ := s.repo.GetSetting(ctx, domain.SettingKeyDeliveryBot, "false")
 	if botEnabled == "true" {
-		token, _ := s.repo.GetSetting(ctx, "bot_token", s.cfg.Telegram.BotToken)
-		chatID, _ := s.repo.GetSetting(ctx, "bot_chat_id", s.cfg.Telegram.BotChatID)
+		token, _ := s.repo.GetSetting(ctx, domain.SettingKeyBotToken, s.cfg.Telegram.BotToken)
+		chatID, _ := s.repo.GetSetting(ctx, domain.SettingKeyBotChatID, s.cfg.Telegram.BotChatID)
 		botSender := telegram.NewBotSender(token, chatID)
 		if botSender.IsConfigured() {
 			if err := botSender.SendDigest(ctx, digest.SummaryMarkdown); err != nil {
@@ -186,12 +309,24 @@ func (s *FeedService) GenerateDigest(ctx context.Context, topic string) (*domain
 		_ = os.WriteFile(fullPath, []byte(digest.SummaryMarkdown), 0644)
 	}
 
-	// Mark processed posts as read
-	var postIDs []int64
-	for _, p := range posts {
-		postIDs = append(postIDs, p.ID)
+	// Only mark posts as read when explicitly running an "Unread" digest
+	if opts.TimeRange == TimeRangeUnread {
+		var postIDs []int64
+		for _, p := range posts {
+			postIDs = append(postIDs, p.ID)
+		}
+		_ = s.repo.MarkPostsRead(ctx, postIDs)
 	}
-	_ = s.repo.MarkPostsRead(ctx, postIDs)
 
 	return digest, nil
+}
+
+// CleanOldPosts purges read posts older than the specified duration from the local database.
+func (s *FeedService) CleanOldPosts(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return s.repo.CleanPosts(ctx, olderThan, true)
+}
+
+// GetPostStats returns total and unread post counts from the database.
+func (s *FeedService) GetPostStats(ctx context.Context) (total int, unread int, err error) {
+	return s.repo.GetPostStats(ctx)
 }

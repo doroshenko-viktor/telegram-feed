@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repository defines the complete storage interface for channels, posts, digests, and settings.
 type Repository interface {
@@ -12,6 +15,7 @@ type Repository interface {
 	SetTracking(ctx context.Context, channelIDs []int64, tracked bool) error
 	SetMCPAllowed(ctx context.Context, channelIDs []int64, allowed bool) error
 	SetFilterAds(ctx context.Context, channelIDs []int64, filterAds bool) error
+	UpdateChannelTopics(ctx context.Context, id int64, topics []string) error
 	UpdateChannelProfile(ctx context.Context, id int64, summary string, topics []string, contentType string) error
 	UpdateWatermark(ctx context.Context, channelID int64, lastMsgID int) error
 
@@ -20,6 +24,8 @@ type Repository interface {
 	GetPosts(ctx context.Context, filter PostFilter) ([]*Post, error)
 	SearchPosts(ctx context.Context, query string, mcpOnly bool, limit int) ([]*Post, error)
 	MarkPostsRead(ctx context.Context, postIDs []int64) error
+	CleanPosts(ctx context.Context, olderThan time.Duration, onlyRead bool) (int64, error)
+	GetPostStats(ctx context.Context) (totalPosts int, unreadPosts int, err error)
 
 	// Digest operations
 	SaveDigest(ctx context.Context, digest *Digest) error

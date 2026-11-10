@@ -188,7 +188,20 @@ func TestPostsAndAdFiltering(t *testing.T) {
 		t.Fatalf("SearchPosts failed: %v", err)
 	}
 	if len(searchResults) != 0 {
-		t.Errorf("SECURITY LEAK: secret channel returned in MCP search!")
+		t.Errorf("SECURITY LEAK: secret channel returned in search! count: %d", len(searchResults))
+	}
+
+	// Query 4: Date range filtering with Since and Until
+	rangePosts, err := repo.GetPosts(ctx, domain.PostFilter{
+		ChannelIDs: []int64{2001},
+		Since:      now.Add(-90 * time.Minute),
+		Until:      now.Add(-45 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("GetPosts with Since/Until failed: %v", err)
+	}
+	if len(rangePosts) != 1 || rangePosts[0].MsgID != 2 {
+		t.Errorf("expected 1 post (msg_id 2) in date range, got %d", len(rangePosts))
 	}
 }
 
@@ -376,5 +389,170 @@ func TestSettingsPersistence(t *testing.T) {
 	}
 	if val != "false" {
 		t.Errorf("expected updated 'false', got %s", val)
+	}
+}
+
+func TestCleanPostsAndStats(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestDB(t)
+
+	_ = repo.UpsertChannels(ctx, []*domain.Channel{
+		{ID: 5001, AccessHash: 1, Title: "Test Channel", IsTracked: true},
+	})
+
+	now := time.Now()
+	posts := []*domain.Post{
+		{
+			ChannelID: 5001,
+			MsgID:     1,
+			Date:      now.Add(-40 * 24 * time.Hour), // 40 days old, read
+			Text:      "Old read post",
+			IsRead:    true,
+		},
+		{
+			ChannelID: 5001,
+			MsgID:     2,
+			Date:      now.Add(-40 * 24 * time.Hour), // 40 days old, unread
+			Text:      "Old unread post",
+			IsRead:    false,
+		},
+		{
+			ChannelID: 5001,
+			MsgID:     3,
+			Date:      now.Add(-5 * time.Hour), // Fresh, unread
+			Text:      "Fresh unread post",
+			IsRead:    false,
+		},
+	}
+
+	if err := repo.UpsertPosts(ctx, posts); err != nil {
+		t.Fatalf("UpsertPosts failed: %v", err)
+	}
+
+	total, unread, err := repo.GetPostStats(ctx)
+	if err != nil {
+		t.Fatalf("GetPostStats failed: %v", err)
+	}
+	if total != 3 || unread != 2 {
+		t.Fatalf("expected 3 total, 2 unread; got %d total, %d unread", total, unread)
+	}
+
+	// Clean only read posts older than 30 days
+	cleaned, err := repo.CleanPosts(ctx, 30*24*time.Hour, true)
+	if err != nil {
+		t.Fatalf("CleanPosts (onlyRead) failed: %v", err)
+	}
+	if cleaned != 1 {
+		t.Errorf("expected 1 cleaned post, got %d", cleaned)
+	}
+
+	total, unread, err = repo.GetPostStats(ctx)
+	if err != nil {
+		t.Fatalf("GetPostStats failed: %v", err)
+	}
+	if total != 2 || unread != 2 {
+		t.Errorf("expected 2 total, 2 unread after cleaning read post; got %d total, %d unread", total, unread)
+	}
+
+	// Clean all posts older than 30 days (including unread)
+	cleaned, err = repo.CleanPosts(ctx, 30*24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("CleanPosts (all) failed: %v", err)
+	}
+	if cleaned != 1 {
+		t.Errorf("expected 1 cleaned post, got %d", cleaned)
+	}
+
+	total, unread, err = repo.GetPostStats(ctx)
+	if err != nil {
+		t.Fatalf("GetPostStats failed: %v", err)
+	}
+	if total != 1 || unread != 1 {
+		t.Errorf("expected 1 total, 1 unread remaining; got %d total, %d unread", total, unread)
+	}
+}
+
+func TestChannelTopicsAndMultiTagFiltering(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestDB(t)
+
+	channels := []*domain.Channel{
+		{
+			ID:         801,
+			AccessHash: 111,
+			Title:      "Go & Concurrency",
+			IsTracked:  true,
+			Topics:     []string{"go", "concurrency", "backend"},
+		},
+		{
+			ID:         802,
+			AccessHash: 222,
+			Title:      "Kubernetes & Cloud",
+			IsTracked:  true,
+			Topics:     []string{"kubernetes", "cloud", "devops"},
+		},
+		{
+			ID:         803,
+			AccessHash: 333,
+			Title:      "AI & Machine Learning",
+			IsTracked:  true,
+			Topics:     []string{"ai", "python", "ml"},
+		},
+	}
+	if err := repo.UpsertChannels(ctx, channels); err != nil {
+		t.Fatalf("UpsertChannels failed: %v", err)
+	}
+
+	now := time.Now()
+	posts := []*domain.Post{
+		{ChannelID: 801, MsgID: 1, Date: now, Text: "Go sync.Pool benchmark"},
+		{ChannelID: 802, MsgID: 1, Date: now, Text: "K8s 1.34 release"},
+		{ChannelID: 803, MsgID: 1, Date: now, Text: "Claude 3.7 hybrid reasoning"},
+	}
+	if err := repo.UpsertPosts(ctx, posts); err != nil {
+		t.Fatalf("UpsertPosts failed: %v", err)
+	}
+
+	// 1. Test UpdateChannelTopics
+	newTags := []string{"go", "concurrency", "networking", "highload"}
+	if err := repo.UpdateChannelTopics(ctx, 801, newTags); err != nil {
+		t.Fatalf("UpdateChannelTopics failed: %v", err)
+	}
+	ch801, err := repo.GetChannel(ctx, 801)
+	if err != nil {
+		t.Fatalf("GetChannel failed: %v", err)
+	}
+	if len(ch801.Topics) != 4 || ch801.Topics[2] != "networking" {
+		t.Errorf("expected updated topics %#v, got %#v", newTags, ch801.Topics)
+	}
+
+	// 2. Query by single tag: "go" -> returns 1 post
+	pGo, err := repo.GetPosts(ctx, domain.PostFilter{Topic: "go", TrackedOnly: true})
+	if err != nil || len(pGo) != 1 {
+		t.Fatalf("expected 1 post for 'go', got %d (err: %v)", len(pGo), err)
+	}
+
+	// 3. Query by union tags: "go + kubernetes" -> returns 2 posts (Go and K8s)
+	pUnion, err := repo.GetPosts(ctx, domain.PostFilter{Topic: "go + kubernetes", TrackedOnly: true})
+	if err != nil || len(pUnion) != 2 {
+		t.Fatalf("expected 2 posts for 'go + kubernetes', got %d (err: %v)", len(pUnion), err)
+	}
+
+	// 4. Query by comma union: "kubernetes, ai" -> returns 2 posts (K8s and AI)
+	pComma, err := repo.GetPosts(ctx, domain.PostFilter{Topic: "kubernetes, ai", TrackedOnly: true})
+	if err != nil || len(pComma) != 2 {
+		t.Fatalf("expected 2 posts for 'kubernetes, ai', got %d (err: %v)", len(pComma), err)
+	}
+
+	// 5. Query by strict intersection: "go & concurrency" -> matches 801 (1 post)
+	pAnd, err := repo.GetPosts(ctx, domain.PostFilter{Topic: "go & concurrency", TrackedOnly: true})
+	if err != nil || len(pAnd) != 1 {
+		t.Fatalf("expected 1 post for 'go & concurrency', got %d (err: %v)", len(pAnd), err)
+	}
+
+	// 6. Query by strict intersection: "go & kubernetes" -> 0 channels have both -> 0 posts
+	pNone, err := repo.GetPosts(ctx, domain.PostFilter{Topic: "go & kubernetes", TrackedOnly: true})
+	if err != nil || len(pNone) != 0 {
+		t.Fatalf("expected 0 posts for 'go & kubernetes' (intersection), got %d (err: %v)", len(pNone), err)
 	}
 }

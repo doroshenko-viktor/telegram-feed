@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"telegram_feed_summarizer/internal/domain"
 )
@@ -225,6 +226,17 @@ func (r *SQLRepository) updateChannelBoolField(ctx context.Context, col string, 
 	return err
 }
 
+func (r *SQLRepository) UpdateChannelTopics(ctx context.Context, id int64, topics []string) error {
+	ch := &domain.Channel{Topics: topics}
+	query := `
+		UPDATE channels
+		SET topics = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`
+	_, err := r.db.ExecContext(ctx, r.rebind(query), ch.TopicsJSON(), id)
+	return err
+}
+
 func (r *SQLRepository) UpdateChannelProfile(ctx context.Context, id int64, summary string, topics []string, contentType string) error {
 	ch := &domain.Channel{Topics: topics}
 	query := `
@@ -304,6 +316,11 @@ func (r *SQLRepository) GetPosts(ctx context.Context, filter domain.PostFilter) 
 		args = append(args, true)
 	}
 
+	if filter.TrackedOnly {
+		conditions = append(conditions, "c.is_tracked = ?")
+		args = append(args, true)
+	}
+
 	if filter.FilterAds {
 		conditions = append(conditions, "p.is_ad = ?")
 		args = append(args, false)
@@ -323,14 +340,53 @@ func (r *SQLRepository) GetPosts(ctx context.Context, filter domain.PostFilter) 
 		conditions = append(conditions, fmt.Sprintf("p.channel_id IN (%s)", strings.Join(placeholders, ", ")))
 	}
 
-	if filter.Topic != "" {
-		conditions = append(conditions, "c.topics LIKE ?")
-		args = append(args, "%"+filter.Topic+"%")
+	if filter.Topic != "" && filter.Topic != "all" {
+		topicStr := filter.Topic
+		if strings.Contains(topicStr, "&") {
+			// Strict intersection: channel must match all tags
+			parts := strings.Split(topicStr, "&")
+			for _, p := range parts {
+				trimmed := strings.ToLower(strings.TrimSpace(p))
+				if trimmed != "" {
+					conditions = append(conditions, "LOWER(c.topics) LIKE ?")
+					args = append(args, "%"+trimmed+"%")
+				}
+			}
+		} else if strings.Contains(topicStr, "+") || strings.Contains(topicStr, ",") {
+			// Union: channel matches any of the requested topics
+			var parts []string
+			if strings.Contains(topicStr, "+") {
+				parts = strings.Split(topicStr, "+")
+			} else {
+				parts = strings.Split(topicStr, ",")
+			}
+			var orClauses []string
+			for _, p := range parts {
+				trimmed := strings.ToLower(strings.TrimSpace(p))
+				if trimmed != "" {
+					orClauses = append(orClauses, "LOWER(c.topics) LIKE ?")
+					args = append(args, "%"+trimmed+"%")
+				}
+			}
+			if len(orClauses) > 0 {
+				conditions = append(conditions, "("+strings.Join(orClauses, " OR ")+")")
+			}
+		} else {
+			// Single tag
+			trimmed := strings.ToLower(strings.TrimSpace(topicStr))
+			conditions = append(conditions, "LOWER(c.topics) LIKE ?")
+			args = append(args, "%"+trimmed+"%")
+		}
 	}
 
 	if !filter.Since.IsZero() {
 		conditions = append(conditions, "p.date >= ?")
 		args = append(args, filter.Since)
+	}
+
+	if !filter.Until.IsZero() {
+		conditions = append(conditions, "p.date <= ?")
+		args = append(args, filter.Until)
 	}
 
 	if len(conditions) > 0 {
@@ -386,6 +442,31 @@ func (r *SQLRepository) MarkPostsRead(ctx context.Context, postIDs []int64) erro
 	queryArgs := append([]any{true}, args...)
 	_, err := r.db.ExecContext(ctx, r.rebind(query), queryArgs...)
 	return err
+}
+
+func (r *SQLRepository) CleanPosts(ctx context.Context, olderThan time.Duration, onlyRead bool) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+	query := "DELETE FROM posts WHERE date < ?"
+	args := []any{cutoff}
+	if onlyRead {
+		query += " AND is_read = ?"
+		args = append(args, true)
+	}
+
+	res, err := r.db.ExecContext(ctx, r.rebind(query), args...)
+	if err != nil {
+		return 0, fmt.Errorf("cleaning posts: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+func (r *SQLRepository) GetPostStats(ctx context.Context) (int, int, error) {
+	var total, unread int
+	row := r.db.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(CASE WHEN NOT is_read THEN 1 ELSE 0 END), 0) FROM posts")
+	if err := row.Scan(&total, &unread); err != nil {
+		return 0, 0, fmt.Errorf("querying post stats: %w", err)
+	}
+	return total, unread, nil
 }
 
 func (r *SQLRepository) queryPosts(ctx context.Context, query string, args ...any) ([]*domain.Post, error) {
