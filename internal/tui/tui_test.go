@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -587,6 +588,109 @@ func TestTUI_WrapMarkdownLines(t *testing.T) {
 			t.Errorf("line %d exceeded target width %d (got %d runes): %s", i, targetWidth, runes, clean)
 		}
 	}
+}
+
+func TestTUI_DigestSuccessNavigationAndErrorModal(t *testing.T) {
+	m, repo, _ := setupTestTUI(t)
+	ctx := context.Background()
+
+	_ = repo.UpsertChannels(ctx, []*domain.Channel{
+		{
+			ID:        100,
+			Title:     "Engineering Today",
+			IsTracked: true,
+		},
+	})
+	m.reloadChannels()
+
+	// 1. Open digest menu and press Enter
+	m.showingDigestMenu = true
+	newModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if !m.isBusy {
+		t.Error("expected model to be marked as busy while generating")
+	}
+	if m.activeView != ViewDigests {
+		t.Errorf("expected immediate switch to ViewDigests, got view %d", m.activeView)
+	}
+
+	// 2. Test Success Path: digestFinishedMsg should open full digest reader
+	successMsg := digestFinishedMsg{
+		digest: &domain.Digest{
+			ID:              "d-success-123",
+			Title:           "Digest: Engineering Today",
+			SummaryMarkdown: "# Digest Title\nSummary body content",
+			PostCount:       5,
+			CreatedAt:       time.Now(),
+		},
+		err: nil,
+	}
+
+	newModel, _ = m.Update(successMsg)
+	m = newModel.(*Model)
+
+	if m.isBusy {
+		t.Error("expected isBusy to be false after completion")
+	}
+	if m.activeView != ViewDigests {
+		t.Errorf("expected activeView to be ViewDigests, got %d", m.activeView)
+	}
+	if !m.readingFullDigest {
+		t.Error("expected readingFullDigest to be true upon successful generation")
+	}
+	if m.digestCursor != 0 {
+		t.Errorf("expected digestCursor to be 0, got %d", m.digestCursor)
+	}
+
+	viewReader := m.View()
+	if !strings.Contains(viewReader, "Digest: Engineering Today") {
+		t.Errorf("expected reader view to contain digest title, got:\n%s", viewReader)
+	}
+
+	// Exit reader with Esc
+	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = newModel.(*Model)
+	if m.readingFullDigest {
+		t.Error("expected readingFullDigest to be false after Esc")
+	}
+
+	// 3. Test Error Path: digestFinishedMsg with error shows error modal
+	errMsg := digestFinishedMsg{
+		digest: nil,
+		err:     fmt.Errorf("no posts found for 'Engineering Today' in period 'Unread'"),
+	}
+
+	newModel, _ = m.Update(errMsg)
+	m = newModel.(*Model)
+
+	if !m.showingError {
+		t.Fatal("expected showingError to be true after failure")
+	}
+	if m.errorMessage != errMsg.err.Error() {
+		t.Errorf("expected errorMessage to match %q, got %q", errMsg.err.Error(), m.errorMessage)
+	}
+
+	errorView := m.View()
+	if !strings.Contains(errorView, "DIGEST GENERATION FAILED") {
+		t.Errorf("expected error view to render failure title, got:\n%s", errorView)
+	}
+	if !strings.Contains(errorView, "All posts in this timeframe may already be marked as read") {
+		t.Errorf("expected actionable advice in error modal, got:\n%s", errorView)
+	}
+
+	// 4. Dismiss error with Enter
+	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if m.showingError {
+		t.Error("expected showingError to be false after Enter")
+	}
+	if m.errorMessage != "" {
+		t.Errorf("expected empty errorMessage after dismiss, got %s", m.errorMessage)
+	}
+
+	_ = cmd
 }
 
 func cleanANSI(s string) string {

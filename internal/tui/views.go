@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"telegram_feed_summarizer/internal/logger"
 )
 
 // View renders the currently active view mode.
@@ -32,7 +34,9 @@ func (m *Model) View() string {
 	b.WriteString("\n\n")
 
 	// Main View Body
-	if m.showingDigestMenu {
+	if m.showingError {
+		b.WriteString(m.renderErrorModal())
+	} else if m.showingDigestMenu {
 		b.WriteString(m.renderDigestMenuModal())
 	} else if m.readingFullDigest {
 		b.WriteString(m.renderFullDigestReader())
@@ -531,8 +535,25 @@ func (m *Model) renderDigestsView() string {
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(" 📑 PAST DIGEST HISTORY (Fast Recall Memory)") + "\n")
 	b.WriteString(" Third-party LLMs can query these past digests directly over MCP without reading raw messages.\n\n")
 
+	if m.isBusy {
+		boxWidth := min(76, m.width-4)
+		busyBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(highlightColor).
+			Padding(1, 2).
+			Width(boxWidth).
+			Render(fmt.Sprintf("%s\n\n%s\n\n%s",
+				lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("⏳ GENERATING DIGEST..."),
+				m.busyAction,
+				lipgloss.NewStyle().Foreground(subtleColor).Render("Please wait — full digest reader will open automatically upon completion."),
+			))
+		b.WriteString(busyBox + "\n\n")
+	}
+
 	if len(m.digests) == 0 {
-		b.WriteString("  No digests generated yet. Press [g] to generate a digest from your stored posts.\n")
+		if !m.isBusy {
+			b.WriteString("  No digests generated yet. Press [g] to generate a digest from your stored posts.\n")
+		}
 		return b.String()
 	}
 
@@ -778,8 +799,56 @@ func (m *Model) renderDigestMenuModal() string {
 	return b.String()
 }
 
+func (m *Model) renderErrorModal() string {
+	boxWidth := min(76, m.width-4)
+	if boxWidth < 45 {
+		boxWidth = 45
+	}
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(dangerColor).
+		Padding(1, 2).
+		Width(boxWidth)
+
+	var content strings.Builder
+	titleLine := lipgloss.NewStyle().Bold(true).Foreground(dangerColor).Render("❌ DIGEST GENERATION FAILED")
+	content.WriteString(titleLine + "\n\n")
+
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("Error details:") + "\n")
+	content.WriteString(dangerColorRender(m.errorMessage) + "\n\n")
+
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("Suggested actions:") + "\n")
+
+	errLower := strings.ToLower(m.errorMessage)
+	if strings.Contains(errLower, "no posts found") || strings.Contains(errLower, "0 posts") {
+		content.WriteString(" • All posts in this timeframe may already be marked as read or filtered as ads.\n")
+		content.WriteString(" • Press [g] again and choose a wider timeframe: " + highlightColorRender("Today (24h)") + " or " + highlightColorRender("Past 7 Days") + ".\n")
+		content.WriteString(" • Press [s] in the Channels view to sync new incoming posts from Telegram.\n")
+	} else if strings.Contains(errLower, "gemini") || strings.Contains(errLower, "api key") || strings.Contains(errLower, "quota") || strings.Contains(errLower, "503") || strings.Contains(errLower, "401") || strings.Contains(errLower, "403") {
+		content.WriteString(" • Check your Gemini API key in Settings ([o]).\n")
+		content.WriteString(" • Check model availability or quota limits in Settings (e.g. gemini-3.5-flash).\n")
+		content.WriteString(" • If Gemini is unavailable, extractive offline mode will be used if configured.\n")
+	} else {
+		content.WriteString(" • Verify channel subscriptions and sync status with [s].\n")
+		content.WriteString(" • Review your feed and digest options in [g].\n")
+	}
+
+	content.WriteString("\n" + lipgloss.NewStyle().Foreground(subtleColor).Render("Detailed log: "+logger.GetLogPath()) + "\n\n")
+	content.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("Press [Enter], [Esc], [Space], or [q] to dismiss."))
+
+	return borderStyle.Render(content.String()) + "\n"
+}
+
 func (m *Model) renderHelpBar() string {
 	var keys []string
+
+	if m.showingError {
+		keys = []string{
+			helpKey("[Enter/Esc/Space/q]") + " Dismiss Error",
+		}
+		return statusBarStyle.Width(m.width).Render(strings.Join(keys, "  "))
+	}
 
 	if m.editingPrompt {
 		keys = []string{

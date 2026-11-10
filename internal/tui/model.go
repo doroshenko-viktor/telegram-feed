@@ -105,6 +105,10 @@ type Model struct {
 	readingFullDigest  bool
 	digestScrollOffset int
 
+	// Error Modal Alert Dialog
+	showingError bool
+	errorMessage string
+
 	// Status
 	statusMsg  string
 	statusTime time.Time
@@ -396,13 +400,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isBusy = false
 		m.busyAction = ""
 		if msg.err != nil {
-			m.setStatus(fmt.Sprintf("❌ Digest failed: %v (details in ~/.config/telegram-feed/telegram-feed.log)", msg.err))
+			m.showingError = true
+			m.errorMessage = msg.err.Error()
+			m.setStatus(fmt.Sprintf("❌ Digest failed: %v", msg.err))
 		} else {
 			m.setStatus(fmt.Sprintf("✓ %s created! (%d posts summarized)", msg.digest.Title, msg.digest.PostCount))
 			m.reloadDigests()
 			m.reloadChannels()
 			m.activeView = ViewDigests
 			m.digestCursor = 0
+			m.readingFullDigest = true
+			m.digestScrollOffset = 0
 		}
 		return m, nil
 
@@ -414,6 +422,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// When showing error modal alert dialog
+		if m.showingError {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "enter", "q", " ":
+				m.showingError = false
+				m.errorMessage = ""
+				return m, nil
+			}
+			return m, nil
+		}
+
 		// When inside Digest Menu dialog
 		if m.showingDigestMenu {
 			switch msg.String() {
@@ -498,6 +519,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isBusy = true
 				m.busyAction = fmt.Sprintf("Generating digest for %s (%s)...", targetDesc, periodDesc)
 				m.setStatus(fmt.Sprintf("⏳ Generating digest for [%s] (%s)...", targetDesc, periodDesc))
+				m.activeView = ViewDigests // Switch to digests view immediately
 				return m, generateDigestWithOptionsCmd(m.feedSvc, opts)
 
 			default:
