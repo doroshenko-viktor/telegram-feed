@@ -5,6 +5,59 @@ import (
 	"testing"
 )
 
+func TestMarkdownToTelegramHTML_UserRealExample(t *testing.T) {
+	md := `🔥 **Executive Summary**
+
+Главными событиями дня стали анонс новых моделей от Anthropic (Claude Fable 5.2 и Mythos 5.2), зафиксированное падение трафика Stack Overflow в эпоху генеративного ИИ, а также масштабное расследование вокруг Nvidia и соблюдения экспортных ограничений на поставку ИИ-чипов.
+
+---
+
+🚀 **Релизы и инструменты**
+
+* **Anthropic представила модели Claude Fable 5.2 и Claude Mythos 5.2:** По заявлению разработчиков, новые модели превосходят Opus 5.5 по большинству ключевых метрик. Fable 5.2 генерирует ответы на 30% быстрее предшественников (стоимость API составляет $8 за 1M входных и $40 за 1M выходных токенов). Модель Mythos 5.2 на данном этапе доступна только организациям по специальному разрешению.
+* **Субвокальный ввод текста от Subvocal:** Стартап Subvocal продемонстрировал прототип умных очков, позволяющих вводить текст практически беззвучно. Нейросеть распознаёт микродвижения мышц лица и губ, обеспечивая скорость набора до 200 слов в минуту.
+* **Интерактивный справочник по сетевым протоколам:** Запущен наглядный веб-учебник, разбирающий работу 14 сетевых протоколов (включая детальные механизмы TCP и работу DNS-маршрутизации).
+
+---
+
+💡 **ИТ-индустрия и аналитика**
+
+* **Закат эпохи Stack Overflow:** Популярность чат-ботов и ИИ-ассистентов привела к критическому падению активности на платформе — количество новых вопросов снизилось до менее чем 1000 в месяц. Для сравнения, в 2014 году показатели превышали 200 тысяч вопросов ежемесячно.
+* **Расследование в отношении главы Nvidia:** Журналистские расследования и данные утечек американских служб безопасности привели к назначению закрытого брифинга в Конгрессе США на 18 ноября. Расследование касается возможного обхода экспортных ограничений на поставку передовых ИИ-ускорителей в Китай через сторонние азиатские структуры (в частности, сингапурскую Megaspeed).
+
+---
+
+📌 **Коротко**
+
+* **Игровая индустрия:** Стартовала предзагрузка GTA 6 на консолях PS5 и Xbox Series; одновременно анонсирован джейлбрейк для прошивки PS5 14.22. Анонсирована cRPG *Warhammer 40,000: Dark Heresy* — релиз запланирован на 28 января.
+* **Медиа:** Kojima Productions совместно со студией E&H Production анонсировали аниме-сериал *Death Stranding Isolations*. Премьера на Disney+ намечена на 2027 год.`
+
+	html := MarkdownToTelegramHTML(md)
+	t.Logf("Converted HTML:\n%s", html)
+
+	// Verify no raw unrendered double asterisks remain
+	if strings.Contains(html, "**") {
+		t.Errorf("expected no double asterisks in HTML, but found some:\n%s", html)
+	}
+
+	// Verify bold sections
+	if !strings.Contains(html, "🔥 <b>Executive Summary</b>") {
+		t.Errorf("expected '🔥 <b>Executive Summary</b>', got:\n%s", html)
+	}
+	if !strings.Contains(html, "🚀 <b>Релизы и инструменты</b>") {
+		t.Errorf("expected '🚀 <b>Релизы и инструменты</b>', got:\n%s", html)
+	}
+	if !strings.Contains(html, "• <b>Anthropic представила модели Claude Fable 5.2 и Claude Mythos 5.2:</b>") {
+		t.Errorf("expected bold headline in bullet, got:\n%s", html)
+	}
+	if !strings.Contains(html, "<i>Warhammer 40,000: Dark Heresy</i>") {
+		t.Errorf("expected italic game title, got:\n%s", html)
+	}
+	if !strings.Contains(html, "<i>Death Stranding Isolations</i>") {
+		t.Errorf("expected italic anime title, got:\n%s", html)
+	}
+}
+
 func TestMarkdownToTelegramHTML_HeadersAndFormatting(t *testing.T) {
 	md := `# 📰 Telegram Digest: High-Signal Engineering
 
