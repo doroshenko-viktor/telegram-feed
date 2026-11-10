@@ -130,7 +130,9 @@ func GenerateExtractiveDigestWithTitle(customTitle string, topic string, posts [
 		channelTitle := s.title
 		chURL := buildChannelURL(ch)
 		var channelHeader string
-		if chURL != "" {
+		if chURL != "" && ch != nil && ch.Username != "" {
+			channelHeader = fmt.Sprintf("### 📢 [%s](%s) (@%s)", channelTitle, chURL, ch.Username)
+		} else if chURL != "" {
 			channelHeader = fmt.Sprintf("### 📢 [%s](%s)", channelTitle, chURL)
 		} else {
 			channelHeader = fmt.Sprintf("### 📢 %s", channelTitle)

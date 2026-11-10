@@ -177,8 +177,9 @@ func (s *FeedService) GenerateDigestWithOptions(ctx context.Context, opts Digest
 	}
 
 	var (
-		targetName string
-		topic      string
+		targetName    string
+		topic         string
+		targetChannel *domain.Channel
 	)
 
 	if opts.ChannelID > 0 {
@@ -186,6 +187,7 @@ func (s *FeedService) GenerateDigestWithOptions(ctx context.Context, opts Digest
 		if err != nil {
 			return nil, fmt.Errorf("getting channel %d: %w", opts.ChannelID, err)
 		}
+		targetChannel = ch
 		targetName = ch.Title
 		topic = ch.Title
 		filter.ChannelIDs = []int64{opts.ChannelID}
@@ -315,6 +317,19 @@ func (s *FeedService) GenerateDigestWithOptions(ctx context.Context, opts Digest
 		}
 		digest = d
 		logger.Infof("Successfully generated Extractive digest: '%s' (%d posts)", digest.Title, digest.PostCount)
+	}
+
+	// Ensure single-channel digests explicitly have the channel header at the top
+	if targetChannel != nil && digest != nil {
+		if !strings.Contains(digest.SummaryMarkdown, targetChannel.Title) {
+			var chHeader string
+			if targetChannel.Username != "" {
+				chHeader = fmt.Sprintf("### 📢 [%s](https://t.me/%s) (@%s)", targetChannel.Title, targetChannel.Username, targetChannel.Username)
+			} else {
+				chHeader = fmt.Sprintf("### 📢 [%s](https://t.me/c/%d)", targetChannel.Title, targetChannel.ID)
+			}
+			digest.SummaryMarkdown = chHeader + "\n\n" + digest.SummaryMarkdown
+		}
 	}
 
 	// Persist digest into database

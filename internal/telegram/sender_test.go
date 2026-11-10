@@ -165,3 +165,55 @@ Check [Doc](https://example.com) for details.`
 	}
 }
 
+func TestBotSender_SendDigest_MultiChannelDistinctMessages(t *testing.T) {
+	var receivedPayloads []map[string]any
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var p map[string]any
+		_ = json.Unmarshal(body, &p)
+		receivedPayloads = append(receivedPayloads, p)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok": true, "result": {"message_id": 2000}}`))
+	}))
+	defer ts.Close()
+
+	sender := NewBotSender("12345:TEST_TOKEN", "987654")
+	sender.apiBaseURL = ts.URL
+
+	markdown := `### 📢 [4PDA Community](https://t.me/community4pda) (@community4pda)
+• **Anthropic Claude 5.2:** Two new models announced.
+
+---
+
+### 📢 [Golang Weekly](https://t.me/golang_weekly) (@golang_weekly)
+• **Go 1.25 RC:** Performance improvements in runtime scheduler.`
+
+	err := sender.SendDigest(context.Background(), markdown)
+	if err != nil {
+		t.Fatalf("unexpected SendDigest error: %v", err)
+	}
+
+	if len(receivedPayloads) != 2 {
+		t.Fatalf("expected 2 distinct channel messages sent, got %d", len(receivedPayloads))
+	}
+
+	msg1Text, _ := receivedPayloads[0]["text"].(string)
+	if !strings.Contains(msg1Text, "4PDA Community") || !strings.Contains(msg1Text, "Claude 5.2") {
+		t.Errorf("message 1 should contain 4PDA Community summary, got: %s", msg1Text)
+	}
+	if strings.Contains(msg1Text, "Golang Weekly") {
+		t.Errorf("message 1 should NOT contain Golang Weekly, got: %s", msg1Text)
+	}
+
+	msg2Text, _ := receivedPayloads[1]["text"].(string)
+	if !strings.Contains(msg2Text, "Golang Weekly") || !strings.Contains(msg2Text, "Go 1.25 RC") {
+		t.Errorf("message 2 should contain Golang Weekly summary, got: %s", msg2Text)
+	}
+	if strings.Contains(msg2Text, "4PDA Community") {
+		t.Errorf("message 2 should NOT contain 4PDA Community, got: %s", msg2Text)
+	}
+}
+

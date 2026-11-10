@@ -213,3 +213,70 @@ func TestSplitSafeHTML(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitDigestIntoChannelMessages(t *testing.T) {
+	// Case 1: Multiple channel sections with headers
+	md := `# 📰 Telegram Feed Digest
+
+### 📢 [4PDA Community](https://t.me/community4pda) (@community4pda)
+• **Item A1:** Details about Item A1
+• **Item A2:** Details about Item A2
+
+---
+
+### 📢 [Golang Weekly](https://t.me/golang_weekly) (@golang_weekly)
+• **Item B1:** Details about Item B1`
+
+	sections := SplitDigestIntoChannelMessages(md)
+	if len(sections) != 2 {
+		t.Fatalf("expected 2 channel sections, got %d: %v", len(sections), sections)
+	}
+
+	if !strings.Contains(sections[0], "4PDA Community") || !strings.Contains(sections[0], "Item A1") {
+		t.Errorf("section 0 missing channel 1 content: %s", sections[0])
+	}
+	if !strings.Contains(sections[1], "Golang Weekly") || !strings.Contains(sections[1], "Item B1") {
+		t.Errorf("section 1 missing channel 2 content: %s", sections[1])
+	}
+
+	// Case 2: Multi-channel with substantive Executive Summary overview
+	mdOverview := `# 📰 Telegram Feed Digest
+
+🔥 **Executive Summary**
+Major breakthroughs across AI and cloud computing happened today.
+Here is the high-level synthesis for engineering leads.
+
+---
+
+### 📢 4PDA Community (@community4pda)
+• **Item 1:** Test 1
+
+---
+
+### 📢 Golang Weekly (@golang_weekly)
+• **Item 2:** Test 2`
+
+	overviewSections := SplitDigestIntoChannelMessages(mdOverview)
+	if len(overviewSections) != 3 {
+		t.Fatalf("expected 3 sections (overview + 2 channels), got %d", len(overviewSections))
+	}
+	if !strings.Contains(overviewSections[0], "Executive Summary") {
+		t.Errorf("section 0 should be overview, got: %s", overviewSections[0])
+	}
+	if !strings.Contains(overviewSections[1], "4PDA Community") {
+		t.Errorf("section 1 should be 4PDA, got: %s", overviewSections[1])
+	}
+	if !strings.Contains(overviewSections[2], "Golang Weekly") {
+		t.Errorf("section 2 should be Golang Weekly, got: %s", overviewSections[2])
+	}
+
+	// Case 3: Single channel digest
+	mdSingle := `### 📢 4PDA Community (@community4pda)
+• **Post 1:** Content 1
+• **Post 2:** Content 2`
+
+	singleSections := SplitDigestIntoChannelMessages(mdSingle)
+	if len(singleSections) != 1 {
+		t.Fatalf("expected 1 section, got %d", len(singleSections))
+	}
+}

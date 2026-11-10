@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,6 +195,9 @@ func TestGenerateDigestWithOptions_IndividualChannelAndPeriods(t *testing.T) {
 	}
 	if len(digestToday.ChannelIDs) != 1 || digestToday.ChannelIDs[0] != 201 {
 		t.Errorf("expected channel ID 201, got %v", digestToday.ChannelIDs)
+	}
+	if !strings.Contains(digestToday.SummaryMarkdown, "Golang Insights") {
+		t.Errorf("expected channel name 'Golang Insights' in digest summary, got: %s", digestToday.SummaryMarkdown)
 	}
 
 	// Historical digest should NOT mark posts as read

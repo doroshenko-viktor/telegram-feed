@@ -329,3 +329,71 @@ func splitSafeHTML(htmlText string, maxLen int) []string {
 
 	return parts
 }
+
+// SplitDigestIntoChannelMessages splits a multi-channel digest into distinct messages per channel.
+// If the digest contains multiple channel sections (delimited by "📢"), each channel section
+// becomes its own message. If there is an introductory overview before the first channel,
+// it is returned as the first message.
+func SplitDigestIntoChannelMessages(markdownText string) []string {
+	trimmed := strings.TrimSpace(markdownText)
+	if trimmed == "" {
+		return nil
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	var rawSections []string
+	var current strings.Builder
+
+	isChannelHeader := func(line string) bool {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "#") {
+			t = strings.TrimLeft(t, "#")
+			t = strings.TrimSpace(t)
+		}
+		return strings.HasPrefix(t, "📢")
+	}
+
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		// Skip standalone horizontal rules right before a channel header
+		if hrRegex.MatchString(trimmedLine) {
+			continue
+		}
+
+		if isChannelHeader(line) && current.Len() > 0 {
+			content := strings.TrimSpace(current.String())
+			if content != "" {
+				rawSections = append(rawSections, content)
+			}
+			current.Reset()
+		}
+
+		current.WriteString(line)
+		current.WriteString("\n")
+	}
+
+	if current.Len() > 0 {
+		content := strings.TrimSpace(current.String())
+		if content != "" {
+			rawSections = append(rawSections, content)
+		}
+	}
+
+	if len(rawSections) <= 1 {
+		return []string{trimmed}
+	}
+
+	// If the very first section is just a short 1-2 line title without channel or substantive bullets,
+	// merge it into the first channel section so we don't send a trivial 1-line message.
+	firstSec := rawSections[0]
+	if !isChannelHeader(firstSec) {
+		linesCount := len(strings.Split(firstSec, "\n"))
+		hasBullets := strings.Contains(firstSec, "•") || strings.Contains(firstSec, "- ") || strings.Contains(firstSec, "* ")
+		if linesCount <= 3 && !hasBullets && len(rawSections) > 1 {
+			rawSections[1] = firstSec + "\n\n" + rawSections[1]
+			rawSections = rawSections[1:]
+		}
+	}
+
+	return rawSections
+}

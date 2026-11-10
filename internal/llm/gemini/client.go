@@ -103,12 +103,15 @@ func (g *GeminiProvider) GenerateDigest(ctx context.Context, topic string, posts
 
 	var sb strings.Builder
 	sb.WriteString(prompt)
-	sb.WriteString("\n\nRaw Channel Posts (safely delimited):\n")
+	sb.WriteString("\n\nRaw Channel Posts (grouped by source channel):\n")
 
 	earliest := posts[0].Date
 	latest := posts[0].Date
 	channelIDMap := make(map[int64]bool)
 
+	// Group posts by source channel
+	grouped := make(map[int64][]*domain.Post)
+	var orderedChannelIDs []int64
 	for _, p := range posts {
 		if p.Date.Before(earliest) {
 			earliest = p.Date
@@ -118,19 +121,40 @@ func (g *GeminiProvider) GenerateDigest(ctx context.Context, topic string, posts
 		}
 		channelIDMap[p.ChannelID] = true
 
-		var chTitle, chUsername, postURL string
-		if ch, ok := channelMap[p.ChannelID]; ok {
+		if _, exists := grouped[p.ChannelID]; !exists {
+			orderedChannelIDs = append(orderedChannelIDs, p.ChannelID)
+		}
+		grouped[p.ChannelID] = append(grouped[p.ChannelID], p)
+	}
+
+	for _, chID := range orderedChannelIDs {
+		chPosts := grouped[chID]
+		ch := channelMap[chID]
+		chTitle := fmt.Sprintf("Channel %d", chID)
+		var chUsername, chURL string
+		if ch != nil {
 			chTitle = ch.Title
 			chUsername = ch.Username
 			if ch.Username != "" {
-				postURL = fmt.Sprintf("https://t.me/%s/%d", ch.Username, p.MsgID)
+				chURL = fmt.Sprintf("https://t.me/%s", ch.Username)
+			} else {
+				chURL = fmt.Sprintf("https://t.me/c/%d", ch.ID)
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("<post id=\"%d\" channel_id=\"%d\" channel_title=\"%s\" channel_username=\"%s\" url=\"%s\" date=\"%s\">\n",
-			p.MsgID, p.ChannelID, chTitle, chUsername, postURL, p.Date.Format(time.RFC3339)))
-		sb.WriteString(p.Text)
-		sb.WriteString("\n</post>\n\n")
+		sb.WriteString(fmt.Sprintf("<channel id=\"%d\" title=\"%s\" username=\"%s\" url=\"%s\">\n", chID, chTitle, chUsername, chURL))
+		for _, p := range chPosts {
+			var postURL string
+			if ch != nil && ch.Username != "" {
+				postURL = fmt.Sprintf("https://t.me/%s/%d", ch.Username, p.MsgID)
+			} else if ch != nil {
+				postURL = fmt.Sprintf("https://t.me/c/%d/%d", ch.ID, p.MsgID)
+			}
+			sb.WriteString(fmt.Sprintf("  <post id=\"%d\" url=\"%s\" date=\"%s\">\n", p.MsgID, postURL, p.Date.Format(time.RFC3339)))
+			sb.WriteString("    " + strings.ReplaceAll(strings.TrimSpace(p.Text), "\n", "\n    ") + "\n")
+			sb.WriteString("  </post>\n")
+		}
+		sb.WriteString("</channel>\n\n")
 	}
 
 	modelsToTry := []string{g.model}
@@ -162,6 +186,20 @@ func (g *GeminiProvider) GenerateDigest(ctx context.Context, topic string, posts
 	}
 
 	summaryText := result.Text()
+
+	// Guarantee that single channel summaries explicitly start with their channel header
+	if len(orderedChannelIDs) == 1 {
+		singleCh := channelMap[orderedChannelIDs[0]]
+		if singleCh != nil && !strings.Contains(summaryText, singleCh.Title) {
+			var chHeader string
+			if singleCh.Username != "" {
+				chHeader = fmt.Sprintf("### 📢 [%s](https://t.me/%s) (@%s)", singleCh.Title, singleCh.Username, singleCh.Username)
+			} else {
+				chHeader = fmt.Sprintf("### 📢 [%s](https://t.me/c/%d)", singleCh.Title, singleCh.ID)
+			}
+			summaryText = chHeader + "\n\n" + summaryText
+		}
+	}
 
 	var channelIDs []int64
 	for id := range channelIDMap {

@@ -140,6 +140,8 @@ func (b *BotSender) IsConfigured() bool {
 }
 
 // SendDigest sends markdown text formatted as Telegram HTML in chunks to the user's private chat with the bot.
+// If the digest covers multiple channels, it sends a distinct message for each channel (or section),
+// explicitly stating which channel the summary belongs to before proceeding to the next channel.
 func (b *BotSender) SendDigest(ctx context.Context, markdownText string) error {
 	if !b.IsConfigured() {
 		return fmt.Errorf("telegram bot is not configured (token and chat_id required)")
@@ -150,64 +152,69 @@ func (b *BotSender) SendDigest(ctx context.Context, markdownText string) error {
 		baseURL = "https://api.telegram.org"
 	}
 
-	// 1. Chunk markdown with safe limit (3400) so converted HTML stays under Telegram's 4096 character limit
-	chunks := ChunkMarkdown(markdownText, 3400)
+	// 1. Partition digest into channel-specific message sections
+	channelBlocks := SplitDigestIntoChannelMessages(markdownText)
 	apiURL := fmt.Sprintf("%s/bot%s/sendMessage", baseURL, b.botToken)
 
-	for i, chunk := range chunks {
-		htmlChunk := MarkdownToTelegramHTML(chunk)
-		htmlParts := splitSafeHTML(htmlChunk, MaxTelegramMessageLength)
+	for blockIdx, block := range channelBlocks {
+		// Chunk individual channel block with safe limit (3400) if any single channel exceeds limit
+		chunks := ChunkMarkdown(block, 3400)
 
-		for partIdx, part := range htmlParts {
-			payload := map[string]any{
-				"chat_id":    b.chatID,
-				"text":       part,
-				"parse_mode": "HTML",
-			}
-			bodyBytes, err := json.Marshal(payload)
-			if err != nil {
-				return fmt.Errorf("marshaling bot message payload: %w", err)
-			}
+		for i, chunk := range chunks {
+			htmlChunk := MarkdownToTelegramHTML(chunk)
+			htmlParts := splitSafeHTML(htmlChunk, MaxTelegramMessageLength)
 
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
-			if err != nil {
-				return fmt.Errorf("creating http request: %w", err)
-			}
-			req.Header.Set("Content-Type", "application/json")
-
-			resp, err := b.client.Do(req)
-			if err != nil {
-				return fmt.Errorf("sending bot message chunk %d/%d (part %d): %w", i+1, len(chunks), partIdx+1, err)
-			}
-
-			// If Telegram rejected HTML (400 Bad Request), log error and fall back to clean plain text
-			if resp.StatusCode == http.StatusBadRequest {
-				body, _ := io.ReadAll(resp.Body)
-				resp.Body.Close()
-				logger.Warnf("Telegram bot API rejected HTML parse_mode (%s); falling back to clean plain text for chunk %d/%d", string(body), i+1, len(chunks))
-
-				plainText := StripHTMLTags(part)
-				fallbackPayload := map[string]any{
-					"chat_id": b.chatID,
-					"text":    plainText,
+			for _, part := range htmlParts {
+				payload := map[string]any{
+					"chat_id":    b.chatID,
+					"text":       part,
+					"parse_mode": "HTML",
 				}
-				bodyBytes, _ = json.Marshal(fallbackPayload)
-				req, _ = http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
-				req.Header.Set("Content-Type", "application/json")
-				resp, err = b.client.Do(req)
+				bodyBytes, err := json.Marshal(payload)
 				if err != nil {
-					return fmt.Errorf("sending fallback plain text chunk %d/%d: %w", i+1, len(chunks), err)
+					return fmt.Errorf("marshaling bot message payload: %w", err)
 				}
-			}
 
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				body, _ := io.ReadAll(resp.Body)
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
+				if err != nil {
+					return fmt.Errorf("creating http request: %w", err)
+				}
+				req.Header.Set("Content-Type", "application/json")
+
+				resp, err := b.client.Do(req)
+				if err != nil {
+					return fmt.Errorf("sending bot message block %d/%d chunk %d/%d: %w", blockIdx+1, len(channelBlocks), i+1, len(chunks), err)
+				}
+
+				// If Telegram rejected HTML (400 Bad Request), log error and fall back to clean plain text
+				if resp.StatusCode == http.StatusBadRequest {
+					body, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					logger.Warnf("Telegram bot API rejected HTML parse_mode (%s); falling back to clean plain text for block %d/%d", string(body), blockIdx+1, len(channelBlocks))
+
+					plainText := StripHTMLTags(part)
+					fallbackPayload := map[string]any{
+						"chat_id": b.chatID,
+						"text":    plainText,
+					}
+					bodyBytes, _ = json.Marshal(fallbackPayload)
+					req, _ = http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
+					req.Header.Set("Content-Type", "application/json")
+					resp, err = b.client.Do(req)
+					if err != nil {
+						return fmt.Errorf("sending fallback plain text: %w", err)
+					}
+				}
+
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					body, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					return fmt.Errorf("telegram bot API returned status %d for block %d/%d: %s", resp.StatusCode, blockIdx+1, len(channelBlocks), string(body))
+				}
+
 				resp.Body.Close()
-				return fmt.Errorf("telegram bot API returned status %d for chunk %d/%d: %s", resp.StatusCode, i+1, len(chunks), string(body))
+				logger.Infof("Delivered digest channel message %d/%d to Telegram bot chat %s", blockIdx+1, len(channelBlocks), b.chatID)
 			}
-
-			resp.Body.Close()
-			logger.Infof("Delivered digest chunk %d/%d (part %d) to Telegram bot chat %s", i+1, len(chunks), partIdx+1, b.chatID)
 		}
 	}
 
